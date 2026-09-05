@@ -98,10 +98,11 @@ pub const RESERVED_ROOT: &str = "local";
 /// MariaDB 11.8, which is case- AND accent-insensitive. `uq_project_path`
 /// therefore holds ONE slot for every ASCII-case spelling of the segment, so a
 /// byte-exact comparison here lets `LOCAL` pass the guard, reach the INSERT and
-/// occupy the reserved slot — permanently, since `RenameProject` and
-/// `ArchiveProject` both answer `UNIMPLEMENTED`. Folding case is what closes
-/// that; the door is meant to open one way and this is the half of it a byte
-/// comparison left open.
+/// occupy the reserved slot — permanently, because the retirement the paragraph
+/// above names is not shipped either: `crate::write` holds BOTH `RenameProject`
+/// and `ArchiveProject` at `UNIMPLEMENTED` in this release. Folding case is what
+/// closes that; the door is meant to open one way and this is the half of it a
+/// byte comparison left open.
 ///
 /// **ASCII CASE IS THE WHOLE OF WHAT THE COLLATION FOLDS HERE, and that is a
 /// property of the GRAMMAR rather than of this line.** The accent-insensitive
@@ -292,8 +293,8 @@ mod tests {
     /// `utf8mb4_uca1400_ai_ci` on MariaDB 11.8, which is case-insensitive. So
     /// `uq_project_path` holds ONE slot for every ASCII-case spelling of the
     /// segment, and a registration at `LOCAL` occupies the reserved slot for
-    /// ever: `RenameProject` and `ArchiveProject` both answer `UNIMPLEMENTED`, so
-    /// nothing can retire it.
+    /// ever: `crate::write` holds both `RenameProject` and `ArchiveProject` at
+    /// `UNIMPLEMENTED` in this release, so nothing can retire it.
     ///
     /// **THE REFUSAL NAMES WHAT THE CALLER SENT, NOT THE CONSTANT.** Echoing
     /// `local` back at somebody who typed `LOCAL` is the quiet rewriting of an

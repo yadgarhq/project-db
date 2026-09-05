@@ -249,9 +249,9 @@ async fn the_reserved_private_class_root_is_not_registrable() {
 /// MariaDB 11.8, which is case-insensitive. `uq_project_path` therefore holds ONE
 /// slot for every ASCII-case spelling of the segment: with a byte comparison in
 /// the guard, `RegisterProject("LOCAL")` answers OK, that row takes the reserved
-/// slot, and nothing can retire it — `RenameProject` and `ArchiveProject` both
-/// answer `UNIMPLEMENTED`. The door the reservation exists to hold shut would
-/// still be open, one shift key away.
+/// slot, and nothing can retire it — `src/write.rs` holds both `RenameProject`
+/// and `ArchiveProject` at `UNIMPLEMENTED` in this release. The door the
+/// reservation exists to hold shut would still be open, one shift key away.
 ///
 /// **THE SECOND ARM IS WHAT MEASURES THE COLLATION RATHER THAN ASSUMING IT.**
 /// With a row already at `local`, a byte-comparing guard reaches the INSERT and
