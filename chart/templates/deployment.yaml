@@ -1,0 +1,288 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  # OMITTED ENTIRELY WHEN KEDA OWNS THE COUNT, and that guard is the whole point
+  # of the condition. KEDA drives a ScaledObject through an HPA, which writes
+  # `spec.replicas` on this Deployment; Argo runs with `selfHeal: true` and no
+  # `ignoreDifferences` for this field, so a rendered `replicas:` is a value Argo
+  # keeps restoring and the autoscaler keeps overwriting. That is not a snap on
+  # each upgrade — it is a CONTINUOUS revert loop, in which a scale-up is undone
+  # within a sync interval and the load that caused it is served by
+  # `replicaCount` pods.
+  #
+  # Rendering nothing hands the field to the HPA, which is what `minReplicas`
+  # exists to floor. `replicaCount` still applies to every deployment that has
+  # not enabled autoscaling, which is the chart's own default (D80).
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+      annotations:
+        # OPT-IN scraping. Prometheus discovers pods by this annotation rather
+        # than from a static list, so a new module is scraped by declaring itself
+        # rather than by someone remembering to add it centrally (D62's shape).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      # POD-level, and distinct from the container block below. Setting only the
+      # container context leaves the pod admitting root — runAsNonRoot is the
+      # assertion that actually refuses an image which would run as one, rather
+      # than trusting the Containerfile to have said so.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          # A published chart carries image.digest and no tag (D65, D61).
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag }}{{ end }}"
+          # EXPLICIT, because the implicit default flips with the tag form and
+          # this chart uses both. In git the image is a moving tag (D65), and a
+          # moving tag with IfNotPresent means a node serves whatever it cached
+          # first — forever, silently, while the deployment looks current.
+          #
+          # Kubernetes defaults to Always only when the tag is literally `latest`,
+          # so the published chart's digest form defaults to IfNotPresent — and a
+          # Deployment created from one and later pointed at the other keeps the
+          # old policy. That is how a cluster ends up running a build nobody
+          # shipped, which is exactly what happened here.
+          #
+          # Always is correct for both forms: a digest that is already present is
+          # not re-downloaded, so this costs nothing where the digest is pinned.
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 50051
+          env:
+            - name: DB_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: DB_USER
+              value: {{ .Values.database.user | quote }}
+            # ONE ssl-mode for BOTH connections the pod opens: D7's boot probe
+            # and the serving pool. They used to be described separately, and
+            # the probe's description carried no ssl-mode at all — so it ran on
+            # sqlx's `preferred` default, which falls back to an unencrypted
+            # connection, while the pool beside it required TLS.
+            #
+            # There is deliberately no DB_REQUIRE_TLS here. The binary REFUSES
+            # to boot when that key is set, rather than ignoring an operator who
+            # used it to ask for a transport guarantee it can no longer give.
+            - name: DB_SSL_MODE
+              value: {{ .Values.database.sslMode | quote }}
+            {{- if .Values.database.sslCaSecret }}
+            # THE AUTHORITY the two verifying modes check the engine against, and
+            # the half a mode alone is not. RENDERED ONLY WHEN A SECRET IS NAMED,
+            # so a deployment on `required` — the default, which checks no
+            # certificate — sends the binary nothing and behaves as before.
+            #
+            # A PATH, never a PEM (D80), and the binary treats an empty value as
+            # no authority rather than as a path it must open. That matters here:
+            # Helm renders an unset value as "", so a variable rendered
+            # unconditionally would fail the boot of every deployment that never
+            # asked for verification.
+            - name: DB_SSL_CA_FILE
+              value: /var/run/config/engine-ca/ca.pem
+            {{- end }}
+            # D4's arithmetic, both halves of it. The binary refuses to boot
+            # when maxConnections x REPLICAS exceeds the engine's ceiling less
+            # the five it reserves for an operator, so an engine with a smaller
+            # ceiling than stock MariaDB's 151 needs all three to be settable.
+            - name: DB_MAX_CONNECTIONS
+              value: {{ .Values.database.maxConnections | quote }}
+            - name: DB_ENGINE_MAX_CONNECTIONS
+              value: {{ .Values.database.engineMaxConnections | quote }}
+            # THE NUMBER THE AUTOSCALER MAY REACH, not the number running now.
+            # It is the multiplier in the headroom check above, so wiring
+            # replicaCount while KEDA scales to autoscaling.maxReplicas would
+            # check the arithmetic against a count the autoscaler exceeds. Same
+            # expression as gateway's YADGAR_MAX_REPLICAS, for the same reason.
+            - name: REPLICAS
+              value: {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.maxReplicas | quote }}{{ else }}{{ .Values.replicaCount | quote }}{{ end }}
+            {{- if .Values.tls.enabled }}
+            # THE HOP INTO THIS POD, which DB_SSL_MODE above says nothing about:
+            # that one describes the connection out to the engine. Rendered only
+            # when asked for, so a deployment that has not cut over sends the
+            # binary nothing and opens the cleartext listener it always opened.
+            - name: LISTEN_TLS_ENABLED
+              value: "1"
+            # PATHS, never an issuer-specific resource (D80). Two of them,
+            # because a certificate and its key are two files — and naming them
+            # separately is what lets the binary say WHICH of the two was missing
+            # when only half of a Secret mounted.
+            - name: LISTEN_TLS_CERT_FILE
+              value: /var/run/config/serving-cert/tls.crt
+            - name: LISTEN_TLS_KEY_FILE
+              value: /var/run/config/serving-cert/tls.key
+            {{- end }}
+          volumeMounts:
+            # THE CONFIGURATION REPOSITORY'S TWO CONFIGMAPS (ADR-0569, ADR-0570,
+            # step 2a): the knobs every service reads, and this service's own —
+            # empty today, mounted anyway so it is ready the day it is not.
+            #
+            # DIRECTORIES, NEVER `subPath`. A subPath mount is copied once at
+            # container start and kubelet never updates it, so the file would be
+            # frozen for the life of the pod while the ConfigMap moved underneath
+            # it — the rotation watcher would see nothing and an edited knob
+            # would silently never take effect.
+            #
+            # NO `optional: true`, unlike every Secret mount below. The default,
+            # `false`, is what makes kubelet refuse to start this pod at all
+            # while `shared` or `project-db` is absent — `ContainerCreating` naming
+            # the missing ConfigMap — rather than starting it with an empty
+            # directory the binary would then refuse to read from anyway
+            # (ScheduleError::Absent).
+            #
+            # **`project-db` IS MOUNTED, AND TODAY IT IS NEITHER READ NOR WATCHED.**
+            # `yadgar-lifecycle`'s `Configuration::under(root)` yields exactly one
+            # path, `root/shared/shared.yaml`; the crate has no API for a
+            # per-service document, so `config-project-db` is in no process's
+            # ADR-0523 watch set. Two things follow and both are deliberate. The
+            # `optional: false` reasoning above is true of `shared` and NOT of
+            # this one — an absent `project-db` ConfigMap blocks the pod for no
+            # functional benefit, which is accepted so that both mounts are
+            # governed by one rule rather than two. And the day this file gains
+            # its first knob, Argo will sync it and kubelet will swap it and NO
+            # POD WILL RESTART, so the new value never takes effect and nothing
+            # reports that — the exact failure ADR-0570 names for `envFrom`,
+            # reproduced through a file mount. THE MOUNT IS READY; JOINING THIS
+            # DOCUMENT TO THE WATCH SET IS A FURTHER CHANGE, and it belongs in
+            # the same pull request as the first project-db-only knob.
+            #
+            # THE FIRST KNOB IS ALREADY KNOWN: D53 caps the depth of a project
+            # path and says the limit is CONFIGURATION (D43). `src/path.rs`
+            # implements no cap for exactly that reason — ADR-0569 leaves a knob
+            # no compiled-in default to fall back on, so a constant invented
+            # here would be the defect rather than a placeholder for the fix.
+            #
+            # Note also that `database.*` stays a chart value for now —
+            # `yadgarhq/config` has already ruled that knob stays put, so it is
+            # not moved here alongside the rotation schedule.
+            - name: config-shared
+              mountPath: /etc/yadgar/config/shared
+              readOnly: true
+            - name: config-project-db
+              mountPath: /etc/yadgar/config/project-db
+              readOnly: true
+            - name: db-password
+              mountPath: /var/run/secrets/project-db
+              readOnly: true
+            {{- if .Values.database.sslCaSecret }}
+            # A DIRECTORY MOUNT, never subPath — the same argument the serving
+            # certificate below makes, and it applies to an authority too. A
+            # subPath mount is a one-time copy kubelet never refreshes, so a
+            # rotated CA would never reach this pod and the pool would keep
+            # verifying against a bundle that no longer signs anything.
+            - name: engine-ca
+              mountPath: /var/run/config/engine-ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            # A DIRECTORY MOUNT, never subPath. A subPath mount is a one-time
+            # copy that kubelet never refreshes, so the certificate would freeze
+            # at whatever it was when the pod started — and a serving certificate
+            # that never refreshes EXPIRES, after which every caller refuses this
+            # pod on a date nobody is watching.
+            - name: serving-cert
+              mountPath: /var/run/config/serving-cert
+              readOnly: true
+            {{- end }}
+          # NO readiness probe hitting a /health that returns early. The process
+          # does not listen until the capability probe and migrations have both
+          # succeeded (D69), so "the port is open" already means "ready" — and a
+          # probe that passed earlier than that would report ready for a pod that
+          # cannot serve, which under D68 is a pod the HPA adds replicas around.
+          #
+          # A tcpSocket probe is still the right one once tls.enabled is set: it
+          # completes a TCP connection and no handshake, so it neither needs a
+          # certificate of its own nor cares which transport the port speaks.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        # The two ConfigMaps `yadgarhq/config` renders, same reasoning as the
+        # mounts above: unconditional, a directory each, never optional.
+        - name: config-shared
+          configMap:
+            name: shared
+        - name: config-project-db
+          configMap:
+            name: project-db
+        - name: db-password
+          secret:
+            secretName: {{ .Values.database.passwordSecret }}
+        {{- if .Values.database.sslCaSecret }}
+        - name: engine-ca
+          secret:
+            secretName: {{ .Values.database.sslCaSecret }}
+            # REQUIRED, and this is the one place this chart does NOT copy the
+            # serving certificate's `optional: true`. That argument rests on the
+            # BINARY opening the file and naming it: `ServeTls` reads its own
+            # certificate, so an empty mount produces `BootError::TlsUnreadable`
+            # quoting the path. Nothing in this module opens the CA — sqlx does,
+            # at connect time, and its `CertificateInput::data` returns a bare
+            # `std::io::Error` from `std::fs::read` with NO path in it. The
+            # operator would get "error communicating with database: No such file
+            # or directory (os error 2)", which names neither the file nor the
+            # authority and points at the engine instead.
+            #
+            # So a FailedMount event, which at least names this volume and the
+            # Secret behind it, is the better of the two errors here — the
+            # opposite of the serving certificate's case, because the property
+            # that made `optional` better there does not hold.
+            # ONE KEY, and renaming it is half the point: an RDS bundle, a
+            # cert-manager Secret and a hand-assembled one all call this
+            # something different, and DB_SSL_CA_FILE names exactly one path.
+            items:
+              - key: {{ required "database.sslCaSecretKey names the key inside database.sslCaSecret that holds the CA bundle and must be set whenever sslCaSecret is; see the chart's values.yaml" .Values.database.sslCaSecretKey | quote }}
+                path: ca.pem
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: serving-cert
+          secret:
+            secretName: {{ required "tls.certSecret holds the certificate and private key this module presents and must be set whenever tls.enabled is; see the chart's values.yaml" .Values.tls.certSecret }}
+            # OPTIONAL, and that is not laxity — it decides WHICH error the
+            # operator gets. A required mount that cannot be satisfied leaves the
+            # pod in ContainerCreating with a FailedMount event about a volume.
+            # An optional one mounts an empty directory, the binary finds no file
+            # at LISTEN_TLS_CERT_FILE, and it exits at boot naming THAT PATH and
+            # saying that TLS was asked for so a plaintext listener is not the
+            # answer. Neither starts; only one of them explains itself. There is
+            # no third outcome in which this pod answers callers over an
+            # unencrypted connection it was told to encrypt.
+            optional: true
+            # NAMED KEYS rather than the whole Secret. An issuer's Secret also
+            # carries `ca.crt`, which this pod has no use for — the CALLER is
+            # what mounts that — and selecting the two keys it does need is also
+            # what renames whatever the issuer called them to the `tls.crt` and
+            # `tls.key` that LISTEN_TLS_CERT_FILE and LISTEN_TLS_KEY_FILE name.
+            items:
+              - key: {{ required "tls.certSecretKey names the key inside tls.certSecret that holds the certificate and must be set whenever tls.enabled is; see the chart's values.yaml" .Values.tls.certSecretKey | quote }}
+                path: tls.crt
+              - key: {{ required "tls.keySecretKey names the key inside tls.certSecret that holds the private key and must be set whenever tls.enabled is; see the chart's values.yaml" .Values.tls.keySecretKey | quote }}
+                path: tls.key
+        {{- end }}

@@ -1,0 +1,208 @@
+# In git the image points at a moving TAG; the PUBLISHED chart pins a DIGEST,
+# rewritten by ci-release at package time (D65). The two differ deliberately: a
+# chart in git that pinned a digest would need a commit per release, and a
+# published chart that pointed at a tag would not be reproducible.
+image:
+  repository: ghcr.io/yadgarhq/project-db
+  tag: latest
+
+# At least two, always (D55). D18's cache coherence, D23's client-side balancing
+# and D47's atomic claim are multi-replica behaviours; one replica makes an
+# entire category of defect unreachable.
+replicaCount: 2
+
+# Requests are MANDATORY: an HPA cannot compute utilisation without them, and a
+# pod with no request is BestEffort and evicted first (D68). Memory has a limit;
+# CPU deliberately does not — throttling a latency-bound service is the opposite
+# of what scaling out is for.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# D80: the platform is a deployment choice, so every number the binary needs is
+# a value here rather than a default only a fork can reach. These four were
+# compiled-in defaults until now, and three of them describe the REFERENCE
+# engine specifically — a stock MariaDB on 3306 allowing 151 connections. An
+# adopter on RDS, Aurora, Cloud SQL or Azure MySQL has different numbers and had
+# nothing to set.
+database:
+  host: project-db-mariadb
+  # Azure MySQL flexible-server and proxied setups do not all speak 3306.
+  port: 3306
+  name: project
+  user: project
+  passwordSecret: project-db-password
+
+  # HOW TLS IS NEGOTIATED to the engine, and how far the engine's identity is
+  # checked. One of: disabled, preferred, required, verify-identity.
+  #
+  # `required` is the shipped default: it encrypts and checks no certificate, so
+  # nothing about the reference deployment changes. `verify-identity` is THE
+  # ONLY MODE THAT CHECKS THE ENGINE IS WHO IT CLAIMS — what an adopter on RDS,
+  # Aurora, Cloud SQL or Azure MySQL wants, and what no value could ask for
+  # until this key existed, because the binary read a BOOLEAN and the only
+  # reachable answers were "encrypt" and "do not". D80 makes that a value here
+  # rather than a recompile.
+  #
+  # IT NEEDS `sslCaSecret` BELOW SET TOO, unless the engine's certificate is
+  # signed by a public root — an Azure MySQL flexible server is. Without it sqlx
+  # checks against the PUBLIC web roots, which sign no RDS, Aurora or
+  # operator-issued engine certificate, so the connection is refused. The two
+  # values move together or neither moves.
+  #
+  # `verify-ca` IS GONE AND SETTING IT NOW CRASH-LOOPS THE POD. It was listed
+  # here and it named a check nothing performed. Measured in sqlx 0.9: the trust
+  # store is seeded with the public web roots BEFORE the configured authority is
+  # appended, so naming a CA widens trust and never restricts it; and every mode
+  # but `verify-identity` routes through a verifier that maps a hostname
+  # mismatch to a verified assertion. Together those accept any publicly-trusted
+  # certificate for ANY name — a stranger holding a certificate for their own
+  # domain passed as the engine, and the mode reported success. `store` refuses
+  # it at boot rather than offering it, so a deployment carrying this value
+  # fails to start with a message naming `verify-identity`. Nothing in this
+  # estate runs it; the value is removed here so the chart stops offering what
+  # the binary now refuses.
+  #
+  # `preferred` is sqlx's own default and is offered only so that choosing it is
+  # a decision somebody wrote down: it falls back to an UNENCRYPTED connection
+  # when the engine will not negotiate TLS, silently, and this module's deny.toml
+  # accepts RUSTSEC-2023-0071 on the strength of TLS being in force.
+  #
+  # It governs BOTH connections the pod opens — D7's boot probe and the serving
+  # pool — because both are built from one set of options. An unrecognised value
+  # refuses the boot rather than selecting something.
+  sslMode: required
+
+  # THE AUTHORITY `sslMode: verify-identity` CHECKS AGAINST, as a Secret this
+  # chart mounts and whose path the binary is handed in `DB_SSL_CA_FILE`.
+  #
+  # EMPTY IS THE SHIPPED DEPLOYMENT AND IS LEGITIMATE, not a missing value. Under
+  # `required` — the default — no certificate is checked at all, so there is
+  # nothing for an authority to do. It is also legitimate under `verify-identity`
+  # on an Azure MySQL flexible server, whose engine certificate is signed by a
+  # PUBLIC root sqlx already trusts. Empty renders no environment variable, no
+  # mount and no volume, and the binary reads it as no authority rather than as
+  # an unopenable empty path.
+  #
+  # A PATH INTO A MOUNTED SECRET, never a PEM pasted into this file (D80). A file
+  # is what a Secret, a ConfigMap and a bare VM all produce, and it is what
+  # ROTATES: a CA in git is correct only until the rotation nobody followed.
+  # Unlike `tls.certSecret` this one holds no private key — it is the public
+  # certificate of whoever signed the engine — so the reason it is a Secret is
+  # only that a Secret is what an issuer writes.
+  # SET, THE SECRET MUST EXIST: this mount is required rather than optional,
+  # unlike the serving certificate's. sqlx opens the CA and its error names no
+  # path, so a FailedMount event that names this Secret is the more useful
+  # failure than a pathless io error attributed to the engine.
+  sslCaSecret: ""
+  # The key inside that Secret holding the PEM bundle, mounted as `ca.pem`.
+  #
+  # Named rather than assumed: `ca.crt` is what a `kubernetes.io/tls` Secret
+  # written by cert-manager calls it, and a Secret assembled by hand — or an RDS
+  # bundle downloaded from AWS — is free to call it something else.
+  sslCaSecretKey: ca.crt
+
+  # THE OTHER HALF OF D4's ARITHMETIC, and the reason this one is not optional.
+  #
+  # `store`'s `check_engine_headroom` refuses boot when
+  # maxConnections x replicas exceeds engineMaxConnections minus five, the five
+  # being what the engine keeps back so an operator can still log in. 151 is
+  # stock MariaDB's number; RDS derives max_connections from instance size, and
+  # a small instance is well under it. On an engine with a smaller ceiling the
+  # pod could not start and the operator had no value to change.
+  maxConnections: 8
+  engineMaxConnections: 151
+
+# THE OTHER TRANSPORT THIS POD HAS, and the one `database.sslMode` says nothing
+# about. `sslMode` decides how this pod reaches its ENGINE; this decides what
+# `project` gets when it reaches this pod. That hop carries the registry's whole
+# contents and every scope, and on a flat pod network it is readable by anyone on
+# the network.
+#
+# PATHS AND A FLAG, NEVER AN ISSUER-SPECIFIC RESOURCE (D80). The chart names a
+# Secret and the keys inside it, and the binary is handed two file paths. In the
+# reference deployment cert-manager writes that Secret; on EKS a Secret assembled
+# by hand produces something neither the chart nor the binary can tell apart.
+# Nothing here requires a CRD, an issuer or a mesh.
+tls:
+  # OFF, and turning it on is a separate, revertible change. The caller has to
+  # dial this pod over TLS at the same moment, so turning this on alone breaks
+  # the hop rather than securing it: the two flags move together, once
+  # certificates exist. The same discipline every other cut-over in this estate
+  # has used.
+  #
+  # THERE IS NO SILENT MIDDLE STATE. `true` with a certificate that is missing,
+  # undecodable, or not the partner of its key fails at boot naming the file.
+  # The process NEVER opens a plaintext listener because TLS configuration
+  # failed. `false` with a certificate still configured is the reverted state,
+  # and project-db logs a warning saying it is listening in cleartext, so nobody
+  # has to infer it.
+  enabled: false
+  # The Secret holding this module's OWN certificate and its private key.
+  #
+  # A `kubernetes.io/tls` Secret is what an issuer writes, and it carries
+  # `tls.crt`, `tls.key` and usually `ca.crt` together. The CALLER mounts only
+  # the `ca.crt` out of this same Secret, while this pod mounts the certificate
+  # and the key. One object, read differently by each side of the hop.
+  #
+  # AN EMPTY VALUE IS A LEGITIMATE DEPLOYMENT RATHER THAN A MISSING ONE. It is
+  # what every deployment looks like until the cut-over, and `enabled: false` is
+  # what makes it legitimate. The requirement is CONDITIONAL — the template asks
+  # for this only when the flag is set — because a chart that demanded a Secret
+  # nobody has issued yet would fail to install on a cluster running perfectly
+  # well without one. The same D80 argument that turned the KEDA ScaledObject
+  # off by default.
+  #
+  # NOT A PEM PASTED INTO THIS FILE, and the reason is stronger than it is for a
+  # CA bundle: this Secret holds a PRIVATE KEY. It also rotates, and a copy in
+  # git is correct only until the rotation nobody remembered to follow.
+  certSecret: project-db-tls
+  # The keys inside that Secret holding the certificate and the private key.
+  # They are mounted as `tls.crt` and `tls.key`.
+  #
+  # Named rather than assumed: those are what a `kubernetes.io/tls` Secret uses,
+  # and a Secret assembled by hand for a deployment cert-manager does not run in
+  # is free to call them something else.
+  certSecretKey: tls.crt
+  keySecretKey: tls.key
+
+# D68: scale on CONCURRENCY, not CPU. A -db waits on MariaDB and a logic service
+# waits on its -db, so both saturate at low CPU — a CPU-driven HPA stays quiet
+# exactly when the system is in trouble.
+#
+# The signal is call RATE per replica, read from D67's metrics. Rate rather than
+# a gauge because nothing tracks in-flight requests yet: rate is what the
+# instrumentation actually exposes today, and pretending otherwise would give a
+# scaler that reads nothing. Stated here rather than silently substituted.
+#
+# OFF BY DEFAULT, and that is D80 rather than a change of mind about scaling. A
+# ScaledObject is `keda.sh/v1alpha1`, so a chart that emits one by default fails
+# to install on any cluster that has not adopted KEDA — a module chart may not
+# require a CRD the adopter did not choose. The reference deployment installs
+# KEDA and turns this on in its own values; everyone else gets `replicaCount`
+# replicas and a chart that applies cleanly.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  # At least two, always (D55) — the floor is a correctness property, not a
+  # tuning knob: one replica makes a class of defect unreachable.
+  maxReplicas: 6
+  # Calls per second per replica before adding one.
+  threshold: "10"
+  prometheusAddress: http://prometheus-server.observability.svc.cluster.local
+
+# ADR-0523's ROTATION WATCHER HAS NO KEYS IN THIS FILE, AND THAT IS THE POINT.
+# How often this pod re-hashes the files it read at boot, and how long it waits
+# before exiting on a change, are read from `yadgarhq/config`'s `shared`
+# ConfigMap — mounted as a directory by the deployment template — and there is no
+# compiled-in default behind either (ADR-0569, ADR-0570). A value here would be a
+# SECOND source for a knob that has exactly one.
+#
+# THE WATCHER RUNS ON EVERY INSTALL, not only a TLS one. The watch set holds the
+# serving certificate and its key when `tls.enabled` is true, and it ALWAYS holds
+# the database password, the mounted configuration document, and the engine CA
+# when one is named — files this process reads once and then keeps using for the
+# life of the pod. ADR-0523's rule is about provenance rather than payload.

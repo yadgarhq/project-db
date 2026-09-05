@@ -1,0 +1,91 @@
+[package]
+name = "yadgar-project-db"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "Apache-2.0"
+description = "The project module's -db twin: the registry of projects, serving ProjectDbService over gRPC."
+
+[dependencies]
+# Pinned by RELEASE TAG, not by branch — a published tag never moves in this
+# organisation, so `v0.2.0` names exactly one commit for as long as it exists
+# (the same reasoning that pins images by digest (D61) and actions by SHA (D62)).
+yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.2.0" }
+# In tonic 0.14 prost codegen moved out to tonic-prost; there is no "prost"
+# feature on tonic itself.
+tonic = { version = "0.14", default-features = false, features = [
+  "codegen",
+  "router",
+  "server",
+  "transport",
+  # `tls-ring`, NOT `tls-aws-lc`. aws-lc-rs needs cmake and a C toolchain, and
+  # this binary builds for x86_64-unknown-linux-musl (D63). It is also the
+  # provider sqlx already uses here — `tls-rustls-ring` below — so there is one
+  # crypto provider in this tree rather than two.
+  "tls-ring",
+] }
+tonic-prost = "0.14"
+prost = "0.14"
+# `google.protobuf.Timestamp`, which this contract carries on `last_seen_at` and
+# on every `Meta`. sqlx here has neither `chrono` nor `time`, so no Rust type
+# decodes a MariaDB `TIMESTAMP` — every timestamp crosses the boundary as an
+# epoch second and is assembled into this crate's type. See `src/rows.rs`.
+prost-types = "0.14"
+# The shared instrumentation seam (D67), pinned by release tag like every in-org
+# crate. `v0.1.2` is `v0.1.1` with its own vendored proto pin moved to v1.10.2 —
+# a provable no-op, taken because a new repository pinning a stale tag is a
+# choice that would need a reason and has none.
+yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.1.2", features = ["grpc"] }
+# WHICH SIGNALS END THIS PROCESS, and the ADR-0523 rotation watcher, decided once
+# for the estate rather than once per repository (ADR-0526's pin, D19's rule).
+#
+# ALL THREE UNITS, AND THEY ARE ONE UNIT. `rotate::watch` and `shutdown` are the
+# two arms of one `select!`, and whichever wins, `drain_within` bounds what
+# follows. Default features, so `rotate` is compiled IN: this module reads a
+# database password and a mounted configuration document at boot and then keeps
+# using both for the life of the pod, which is what ADR-0523's provenance rule is
+# about. Taking the watcher without `drain_within` is the bug rather than half
+# the fix — tokio never unregisters a libc signal handler, so once the rotation
+# arm wins the `select!` a later SIGTERM is swallowed and only SIGKILL remains.
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.0" }
+sqlx = { version = "0.9", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "mysql",
+  "macros",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# D9's differing-payload refusal compares a digest of the prior REQUEST, so the
+# digest has to be one a caller cannot collide. A non-cryptographic hash is
+# cheaper and its collision is the exact lie the rule exists to stop: two
+# different requests fingerprinting alike are replayed, and the caller is told a
+# request nobody performed succeeded.
+sha2 = "0.10"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v7"] }
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `tests/serve_tls.rs` proves the serving transport with REAL handshakes, so it
+# needs a gRPC CLIENT to handshake with — which the shipped binary has no use
+# for, since this module only ever answers.
+tonic = { version = "0.14", default-features = false, features = ["channel"] }
+# `TcpListenerStream` is what lets a listener be BOUND before it is served:
+# picking a port and reopening it leaves a window in which something else can
+# take it.
+tokio-stream = { version = "0.1", features = ["net"] }
+# Certificates are MINTED PER RUN rather than checked in: a fixture key in the
+# repository is a secret in the repository, and it expires on a date nobody is
+# watching.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

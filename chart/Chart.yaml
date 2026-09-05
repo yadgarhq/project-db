@@ -1,0 +1,6 @@
+apiVersion: v2
+name: project-db
+description: The project module's -db twin — the registry of projects, and the only writer of its store.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
