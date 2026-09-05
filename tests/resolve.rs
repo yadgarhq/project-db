@@ -259,6 +259,69 @@ async fn the_bare_reserved_root_is_refused_as_a_candidate_rather_than_failing_in
     assert!(err.message().contains("local"), "{}", err.message());
 }
 
+/// **THE READ-SIDE FILTER HAS TO FOLD CASE FOR THE SAME REASON THE REFUSAL
+/// DOES, and the write-side guard cannot reach this at all: the row is already
+/// there.** The ancestor walk is evaluated by the ENGINE, whose `p.path IN (…)`
+/// compares under `utf8mb4_uca1400_ai_ci` — measured on a live MariaDB 11.8, and
+/// the collation `project.path` takes because `src/schema.rs` declares no
+/// `COLLATE`. So a chain still carrying `LOCAL` matches a row spelled `local`.
+/// With a byte-comparing filter nothing is dropped from
+/// `LOCAL/home/max/src/alpha`'s chain, the union's first arm finds the stranger's
+/// row, and every private path spelled with a capital resolves into it with
+/// `exact: false`.
+#[tokio::test]
+async fn an_upper_case_private_path_never_resolves_up_into_a_squatted_reserved_root() {
+    let w = world("project_db_resolve_reserved_squatted_case").await;
+    w.seed_project("local", "a-stranger").await;
+
+    let err = w
+        .resolve("LOCAL/home/max/src/alpha")
+        .await
+        .expect_err("the reserved segment is not an ancestor in any spelling, row or no row");
+    assert_eq!(err.code(), tonic::Code::NotFound);
+
+    // THE CONTROL. A filter that dropped the whole SUBTREE rather than the one
+    // segment would satisfy the assertion above and break the private class; here
+    // a real ancestor is still found with the squatted row present.
+    w.register("local/home/max/src/alpha").await;
+    let r = w
+        .resolve("local/home/max/src/alpha/svc")
+        .await
+        .expect("a registered private project is still an ancestor");
+    assert_eq!(r.resolved_path, "local/home/max/src/alpha");
+    assert!(!r.exact);
+}
+
+/// **THE TWO COMPARISONS MUST BE THE SAME COMPARISON, and this is the test that
+/// says so.** The bare segment is refused ahead of the walk precisely because the
+/// filter below would otherwise reduce its chain to nothing, and `holes(0)`
+/// renders `IN ()` — a syntax error the caller receives as `INTERNAL "storage
+/// error"`. If a later edit makes the refusal byte-exact while the filter goes on
+/// folding case, `LOCAL` passes the refusal, the filter removes it, and the chain
+/// is empty. Asserting the refusal on a mixed-case spelling is what keeps the
+/// two halves in step.
+#[tokio::test]
+async fn the_bare_reserved_root_in_upper_case_is_refused_rather_than_emptying_the_chain() {
+    let w = world("project_db_resolve_reserved_bare_case").await;
+    w.register(ROOT).await;
+
+    let err = w
+        .resolve("LOCAL")
+        .await
+        .expect_err("the reserved segment names no project in any spelling");
+    assert_eq!(
+        err.code(),
+        tonic::Code::InvalidArgument,
+        "an empty ancestor list must not reach the engine as `IN ()`: {}",
+        err.message()
+    );
+    assert!(
+        err.message().contains("LOCAL"),
+        "a refusal names the value the caller sent (ADR-0569): {}",
+        err.message()
+    );
+}
+
 #[tokio::test]
 async fn an_absent_scope_is_refused() {
     let w = world("project_db_resolve_no_scope").await;

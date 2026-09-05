@@ -57,13 +57,24 @@ impl ProjectDb {
         // list is bound twice: an alias at `local` is neutralised by the same
         // line as a live path at `local`, with no second guard to keep in step.
         //
-        // The chain can never be emptied by this: the bare segment is refused
-        // above, so a surviving candidate is either deeper than one segment —
-        // leaving at least its own entry — or a single segment that is not the
-        // reserved one.
+        // ASCII CASE IS FOLDED HERE FOR THE SAME REASON THE REFUSAL ABOVE FOLDS
+        // IT, and this comparison must stay THE SAME comparison as that one. The
+        // walk is evaluated by the ENGINE, and `p.path IN (…)` compares under the
+        // column's collation — `utf8mb4_uca1400_ai_ci`, because `crate::schema`
+        // declares no `COLLATE` — so a chain still carrying `LOCAL` matches a row
+        // spelled `local`. A byte comparison here drops nothing from such a chain
+        // and the squatted row is found anyway.
+        //
+        // The chain can never be emptied by this, and that invariant rests on the
+        // two comparisons being identical: the bare segment IN ANY SPELLING is
+        // refused above, so a surviving candidate is either deeper than one
+        // segment — leaving at least its own entry — or a single segment that
+        // does not fold onto the reserved one. Make one of the two byte-exact and
+        // the other not, and `holes(0)` renders `IN ()`, which the caller
+        // receives as `INTERNAL "storage error"`.
         let chain: Vec<&str> = path::ancestors(&req.candidate_path)
             .into_iter()
-            .filter(|ancestor| *ancestor != path::RESERVED_ROOT)
+            .filter(|ancestor| !ancestor.eq_ignore_ascii_case(path::RESERVED_ROOT))
             .collect();
         let holes = holes(chain.len());
 

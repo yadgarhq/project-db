@@ -243,11 +243,82 @@ async fn the_reserved_private_class_root_is_not_registrable() {
         .expect("`locals` merely shares five characters; a prefix is not a segment");
 }
 
-/// **THE REFUSAL HAPPENS BEFORE THE IDEMPOTENCY KEY IS CLAIMED**, which is the
-/// ordering `src/write.rs` states for the two held-back verbs and takes here for
-/// the same reason: a key spent on an operation nobody performed would make the
-/// caller's later retry of a DIFFERENT request under it fail as a differing
-/// payload.
+/// **THE COLLATION IS WHAT MAKES A BYTE-EXACT REFUSAL INSUFFICIENT.**
+/// `project.path` is declared with no `COLLATE` (`src/schema.rs`, migration 1),
+/// so it takes the server default — measured `utf8mb4_uca1400_ai_ci` on a live
+/// MariaDB 11.8, which is case-insensitive. `uq_project_path` therefore holds ONE
+/// slot for every ASCII-case spelling of the segment: with a byte comparison in
+/// the guard, `RegisterProject("LOCAL")` answers OK, that row takes the reserved
+/// slot, and nothing can retire it — `RenameProject` and `ArchiveProject` both
+/// answer `UNIMPLEMENTED`. The door the reservation exists to hold shut would
+/// still be open, one shift key away.
+///
+/// **THE SECOND ARM IS WHAT MEASURES THE COLLATION RATHER THAN ASSUMING IT.**
+/// With a row already at `local`, a byte-comparing guard reaches the INSERT and
+/// the ENGINE refuses it as `ALREADY_EXISTS` — and that answer IS the
+/// measurement, the unique index saying the two spellings are one key. This
+/// service must answer `INVALID_ARGUMENT` and never get there.
+///
+/// The spellings are literals rather than read from `path::RESERVED_ROOT`
+/// (ADR-0573).
+#[tokio::test]
+async fn an_upper_case_spelling_of_the_reserved_root_is_refused_too() {
+    let w = world("project_db_registry_reserved_root_case").await;
+
+    for sent in ["LOCAL", "LoCaL"] {
+        let err = w
+            .try_register(sent, "an organisation called local")
+            .await
+            .expect_err("the collation makes this the same key as the reserved segment");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{sent}");
+        assert!(
+            err.message().contains(sent),
+            "a refusal names the value the caller sent rather than the constant (ADR-0569): {}",
+            err.message()
+        );
+    }
+    assert!(w.list("").await.is_empty(), "nothing was created");
+
+    // AND THE CLASS THE SEGMENT PROTECTS IS STILL UNTOUCHED IN THAT SPELLING.
+    // A guard that folded case into a PREFIX match would pass every assertion
+    // above and delete the private class outright.
+    w.try_register("LOCAL/home/max/src/alpha", "")
+        .await
+        .expect("a project beneath the reserved segment IS the private class, in any spelling");
+    w.try_register("LOCALS", "a different organisation entirely")
+        .await
+        .expect("`LOCALS` merely shares five characters; a prefix is not a segment");
+
+    // THE SLOT ALREADY TAKEN. `ALREADY_EXISTS` here would mean the guard let the
+    // call through and the ENGINE stopped it, not this service.
+    w.seed_project("local", "a-stranger").await;
+    let err = w
+        .try_register("LOCAL", "")
+        .await
+        .expect_err("the reserved segment is refused whatever its case");
+    assert_eq!(
+        err.code(),
+        tonic::Code::InvalidArgument,
+        "ALREADY_EXISTS here means the unique index refused it rather than this service: {}",
+        err.message()
+    );
+}
+
+/// **THE REFUSAL HAPPENS INSIDE THE TRANSACTION THAT CARRIES THE CLAIM, so the
+/// key is never spent** — which is the property `src/write.rs` states for the two
+/// held-back verbs and takes here for the same reason: a key spent on an
+/// operation nobody performed would make the caller's later retry of a DIFFERENT
+/// request under it fail as a differing payload.
+///
+/// **WHAT THIS TEST CANNOT PIN, stated so that nobody reads more into it.** It
+/// does not pin the ORDER of `refuse_reserved_root` against `idem::claim`.
+/// Moving the guard BELOW the claim leaves this green, because the claim is
+/// written inside the transaction and every pre-commit refusal rolls it back.
+/// The invariant is real and it is guaranteed by TRANSACTION ATOMICITY rather
+/// than by statement order; the guard sits above the claim because a refusal
+/// should not open a transaction at all, which is a cost argument and not this
+/// assertion.
+///
 /// The assertion is on the LEDGER rather than on a second call, and that is
 /// forced rather than chosen: a claim is keyed by `(project_id, user_id, key)`
 /// and the fixture stamps `scope.project_id` with the path under test, so a
