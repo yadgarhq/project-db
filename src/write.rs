@@ -279,12 +279,7 @@ impl ProjectDb {
             path::validate("paths", path)?;
         }
 
-        // DEDUPLICATED, because a bucket flush may carry the same path twice and
-        // an `IN` list is a set. It also makes the unmatched count below mean
-        // what it says.
-        let mut paths: Vec<&String> = req.paths.iter().collect();
-        paths.sort();
-        paths.dedup();
+        let paths = deduplicated(&req.paths);
 
         // AN ALIAS IS TOUCHED TOO. Records written before a rename still carry
         // the old path, so a bucket keyed on what a record carries holds former
@@ -336,6 +331,44 @@ impl ProjectDb {
         }
         Ok(TouchProjectsResponse {})
     }
+}
+
+/// The paths of one flush, as a SET — under the store's own idea of sameness.
+///
+/// **A BUCKET FLUSH MAY CARRY THE SAME PATH TWICE, and an `IN` list is a set**,
+/// so the duplicates go. That much is bookkeeping. What makes this a function
+/// rather than two lines at the call site is WHICH values count as the same one.
+///
+/// **THE COMPARISON IS ASCII-CASE-INSENSITIVE BECAUSE THE ENGINE'S IS.**
+/// `project.path` and `project_alias.alias_path` are declared `utf8mb4` with no
+/// `COLLATE` (`crate::schema`), so they take `utf8mb4_uca1400_ai_ci` — measured
+/// on MariaDB 11.8 — and `path IN (…)` folds ASCII case. A byte-wise dedup
+/// therefore counts `alpha` and `ALPHA` as two while `COUNT(*)` finds the one
+/// row they both name, and the caller of this function compares those two
+/// numbers: the flush would report that it "named paths that resolve to no
+/// registered project" when every path in it resolved. That warning exists to
+/// surface a real fault upstream, and a warning that cries wolf is one nobody
+/// reads. Case is the WHOLE of what the collation folds within the path grammar
+/// `validate` admits — `[A-Za-z0-9._-]`, where `-`, `.` and `_` are each
+/// measured UNEQUAL to nothing but themselves — so folding ASCII case is exactly
+/// as wide as the engine, and no `COLLATE` migration is required to make it so.
+///
+/// **WHICH SPELLING SURVIVES IS IMMATERIAL, and that is worth saying rather than
+/// leaving to be re-derived.** The survivor is bound into a predicate the engine
+/// evaluates under that same collation, so either spelling reaches the same row
+/// and updates the same column. Nothing downstream of here reads the value as
+/// text.
+///
+/// Borrowed, never cloned: the survivors are bound as parameters and the request
+/// outlives the statement.
+fn deduplicated(paths: &[String]) -> Vec<&String> {
+    let mut out: Vec<&String> = paths.iter().collect();
+    // Sorted on a case-folded key so the equal ones are adjacent, which is what
+    // `dedup_by` requires. `to_ascii_lowercase` allocates, and it is bounded:
+    // `MAX_TOUCH` paths of at most `path::MAX_LEN` characters.
+    out.sort_by_key(|p| p.to_ascii_lowercase());
+    out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    out
 }
 
 /// The `Meta` a mutating rpc answers with.
@@ -434,5 +467,72 @@ impl Payload for RegisterProjectRequest {
         canonical.scope = None;
         canonical.idempotency = None;
         canonical.encode_to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A SENTINEL PATH. Nothing in this crate could produce it, and it is
+    /// deliberately not one of the contract's own worked examples — a test built
+    /// on those can be satisfied by an implementation that special-cases the
+    /// documentation.
+    const P: &str = "pangolin-7c21/alpha";
+
+    fn owned(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    /// **THE COUNT THIS FUNCTION PRODUCES IS COMPARED AGAINST ONE THE ENGINE
+    /// PRODUCES**, so it has to count the way the engine counts. Two spellings
+    /// of one path are one row under `uq_project_path`, so a flush carrying both
+    /// offers ONE path — not two, one of which "resolves to no registered
+    /// project".
+    ///
+    /// The literal `1` is spelled here rather than derived from anything the
+    /// implementation knows (ADR-0573).
+    #[test]
+    fn two_ascii_case_spellings_of_one_path_are_one_path() {
+        let flush = owned(&[P, &P.to_ascii_uppercase()]);
+        assert_eq!(
+            deduplicated(&flush).len(),
+            1,
+            "the store folds ASCII case, so these two name one row — counting them as two makes \
+             the unmatched warning fire on a flush in which everything matched"
+        );
+    }
+
+    /// The ordinary case the dedup was written for, kept so that a
+    /// case-insensitive comparison cannot be mistaken for the whole of the job.
+    #[test]
+    fn the_same_spelling_twice_is_one_path() {
+        assert_eq!(deduplicated(&owned(&[P, P])).len(), 1);
+    }
+
+    /// **THE FIXTURE A CASE-INSENSITIVE COMPARISON THAT WENT TOO FAR WOULD
+    /// FAIL.** `-`, `.` and `_` are each measured UNEQUAL to anything but
+    /// themselves under `utf8mb4_uca1400_ai_ci`, and two sibling projects are
+    /// two rows. Collapsing them would silently drop one project's flush.
+    #[test]
+    fn paths_that_differ_by_more_than_case_stay_separate() {
+        let flush = owned(&[P, "pangolin-7c21/bravo", "pangolin-7c21_alpha"]);
+        assert_eq!(deduplicated(&flush).len(), 3);
+    }
+
+    /// WHICHEVER SPELLING SURVIVES, IT IS ONE THE CALLER SENT. The survivor is
+    /// bound as a parameter, and inventing a normalised value here would be the
+    /// quiet rewriting of an identity ADR-0569 refuses.
+    #[test]
+    fn the_survivor_is_a_spelling_the_caller_offered() {
+        let shouted = P.to_ascii_uppercase();
+        let flush = owned(&[P, &shouted]);
+        let kept = deduplicated(&flush);
+        assert_eq!(kept.len(), 1);
+        assert!(
+            kept[0].as_str() == P || kept[0].as_str() == shouted,
+            "the survivor was {:?}, which is neither spelling the caller sent",
+            kept[0]
+        );
     }
 }

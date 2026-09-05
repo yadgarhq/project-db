@@ -127,7 +127,27 @@ impl ProjectDb {
             })?;
 
         let (matched, resolved, status, via_alias) = best;
-        let exact = *matched == req.candidate_path;
+        // ASCII CASE IS FOLDED HERE FOR THE THIRD TIME IN THIS RESOLUTION, AND
+        // ALL THREE MUST STAY THE SAME COMPARISON — the reserved-segment refusal
+        // above, the chain filter above, and this. `matched` is a value the
+        // ENGINE selected, under `utf8mb4_uca1400_ai_ci` (`crate::schema`
+        // declares no `COLLATE`), so the row it names may be spelled in a
+        // different ASCII case than the candidate that found it. A byte
+        // comparison then answers `exact: false` about a row the engine matched
+        // EXACTLY.
+        //
+        // THAT WRONG ANSWER IS A DEAD END RATHER THAN A COSMETIC DEFECT. The
+        // caller surfaces `exact: false` as a D39 notice naming the id to
+        // register (D52), and `RegisterProject` answers `ALREADY_EXISTS` on the
+        // same `uq_project_path` that just matched — so the notice instructs an
+        // operator to perform the one action the store refuses, for ever.
+        //
+        // The fold is exactly as wide as the engine's and no wider: `validate`
+        // admits only `[A-Za-z0-9._-]`, and within that alphabet ASCII case is
+        // the whole of what this collation folds (measured — `-`, `.` and `_`
+        // each compare equal to nothing but themselves). So no `COLLATE`
+        // migration is needed to make this line true.
+        let exact = matched.eq_ignore_ascii_case(&req.candidate_path);
         Ok(ResolveProjectResponse {
             resolved_path: resolved.clone(),
             exact,

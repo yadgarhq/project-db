@@ -218,6 +218,35 @@ The refusal ships ahead of the first caller rather than behind it because the
 door only opens one way: a registration here is immutable, `RenameProject` is
 held back, and a `local` once claimed could never be renamed away.
 
+## Every path comparison in Rust folds ASCII case, not only the reserved one
+
+The reservation above is one instance of a rule that binds this whole crate: a
+path comparison written in Rust is weaker than the unique index guarding it
+unless it folds ASCII case, because the engine folds it and the index therefore
+holds one slot per spelling. Two comparisons were weaker than their index and
+both are closed.
+
+`ResolveProject` reports `exact` by comparing the row the engine found against
+the candidate the caller sent. Byte-wise, `ResolveProject("ACME/ALPHA")` against
+a registered `acme/alpha` answered `resolved_path: "acme/alpha"` with `exact:
+false` — a soft failure reported on a row that matched EXACTLY. That answer is a
+dead end rather than a cosmetic defect: a caller surfaces `exact: false` as a D39
+notice naming the id to register, and `RegisterProject` then answers
+`ALREADY_EXISTS` on the very index that matched. `via_alias` is gated on `exact`,
+so the alias arm gave the same wrong answer.
+
+`TouchProjects` deduplicates its batch before counting how many of its paths
+resolve to a registered project, and the count it compares against comes from the
+engine. A byte-wise dedup left `alpha` and `ALPHA` in the batch as two while
+`COUNT(*)` found the one row they both name, so a flush in which everything
+matched logged the warning that says nothing did. Log-only, and a warning that
+cries wolf is one nobody reads.
+
+Folding ASCII case is exactly as wide as the engine and no wider, for the reason
+the section above gives: within the grammar `validate` admits, ASCII case is the
+whole of what this collation folds. No `COLLATE` migration is needed to make
+either line true, and neither fix creates, deletes or rewrites a row.
+
 ## The Service is headless, deliberately
 
 A normal Service balances at L4, and a gRPC client holds one long-lived HTTP/2
