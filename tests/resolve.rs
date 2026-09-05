@@ -24,6 +24,47 @@ async fn a_registered_path_resolves_to_itself_and_is_exact() {
     assert_eq!(r.status, ProjectStatus::Active as i32);
 }
 
+/// **`exact` IS A STATEMENT ABOUT WHICH ROW WAS FOUND, AND THE STORE DECIDES
+/// WHICH ROW.** `project.path` is `utf8mb4` with no `COLLATE`, so it takes
+/// `utf8mb4_uca1400_ai_ci` and `uq_project_path` holds ONE slot for every
+/// ASCII-case spelling of a path — `p.path IN (…)` therefore matches the row on
+/// the shouted spelling. A byte comparison of the row's path against the
+/// caller's then reports `exact: false` on a row the engine matched EXACTLY,
+/// which is a dead end rather than a cosmetic wrong answer: the caller surfaces
+/// `exact: false` as a D39 notice naming the id to register, and
+/// `RegisterProject` answers `ALREADY_EXISTS` on the same unique index. A loop
+/// with no exit.
+///
+/// **THE LOAD-BEARING ASSERTION RELATES THE TWO SPELLINGS TO EACH OTHER**
+/// rather than each to a constant. They are one key in the store, so whatever
+/// `exact` means it must mean the same thing for both.
+#[tokio::test]
+async fn every_ascii_case_spelling_of_a_registered_path_is_one_key_and_one_answer() {
+    let w = world("project_db_resolve_exact_case").await;
+    w.register(A).await;
+
+    let shouted = A.to_ascii_uppercase();
+    let registered = w.resolve(A).await.expect("the registered spelling");
+    let other = w.resolve(&shouted).await.expect("the shouted spelling");
+
+    assert_eq!(
+        other.resolved_path, A,
+        "the answer is the REGISTERED spelling, which is what every other record in the estate \
+         is stamped with. Echoing {shouted:?} back would hand the caller a partition key that \
+         matches no other record's"
+    );
+    assert_eq!(
+        other.exact, registered.exact,
+        "{shouted:?} and {A:?} are ONE row under `uq_project_path`, so the two resolutions \
+         cannot disagree about whether the candidate had a row of its own"
+    );
+    assert!(
+        other.exact,
+        "and the value they agree on is true: a row was found ON the candidate, not on an \
+         ancestor of it"
+    );
+}
+
 /// D52 as amended by D53: an unregistered path lands in a real parent rather
 /// than failing, and the softness is REPORTED rather than silent.
 #[tokio::test]
@@ -110,6 +151,36 @@ async fn a_former_path_resolves_to_the_project_and_says_so() {
     assert!(
         r.via_alias,
         "the contract sets this when candidate_path matched an alias rather than a live path"
+    );
+}
+
+/// `via_alias` IS THE SECOND HALF OF THE SAME COMPARISON — it is gated on
+/// `exact`, so a byte comparison there takes this answer down with it. The alias
+/// column folds case for exactly the reason the live path does: `alias_path` is
+/// `utf8mb4` with no `COLLATE` too, and it is the PRIMARY KEY of its table.
+///
+/// Its own fixture, because a live path and an alias are matched by different
+/// arms of the union and one arm being right proves nothing about the other.
+#[tokio::test]
+async fn a_differently_cased_former_path_still_reports_that_it_matched_an_alias() {
+    let w = world("project_db_resolve_alias_case").await;
+    let id = w.register(B).await;
+    w.seed_alias(A, &id).await;
+
+    let r = w
+        .resolve(&A.to_ascii_uppercase())
+        .await
+        .expect("the shouted former path");
+
+    assert_eq!(r.resolved_path, B, "the alias resolves to the live path");
+    assert!(
+        r.exact,
+        "the candidate had a row of its own, in the alias table"
+    );
+    assert!(
+        r.via_alias,
+        "the contract sets this when candidate_path matched an alias rather than a live path, \
+         and the store says this candidate did"
     );
 }
 
