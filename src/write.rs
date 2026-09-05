@@ -510,6 +510,26 @@ mod tests {
         assert_eq!(deduplicated(&owned(&[P, P])).len(), 1);
     }
 
+    /// **THE FIXTURE THAT PINS THE SORT KEY RATHER THAN THE COMPARISON.**
+    /// `dedup_by` removes only CONSECUTIVE equals, so the case-folded sort is
+    /// half the fix and not a tidier spelling of it — and a two-element fixture
+    /// cannot tell the two halves apart, because a byte sort leaves two
+    /// spellings of one path adjacent anyway.
+    ///
+    /// The third path is what separates them: byte-wise, every upper-case
+    /// spelling sorts before every lower-case one, so this flush byte-sorts to
+    /// `ALPHA, BRAVO, alpha` and the two alphas are no longer neighbours. A
+    /// dedup that folded case but sorted bytes would answer 3.
+    #[test]
+    fn two_spellings_of_one_path_are_still_one_when_another_path_sorts_between_them() {
+        let flush = owned(&[P, &P.to_ascii_uppercase(), "PANGOLIN-7C21/BRAVO"]);
+        assert_eq!(
+            deduplicated(&flush).len(),
+            2,
+            "two projects were named, in three spellings"
+        );
+    }
+
     /// **THE FIXTURE A CASE-INSENSITIVE COMPARISON THAT WENT TOO FAR WOULD
     /// FAIL.** `-`, `.` and `_` are each measured UNEQUAL to anything but
     /// themselves under `utf8mb4_uca1400_ai_ci`, and two sibling projects are
