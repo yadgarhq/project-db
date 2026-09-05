@@ -1,0 +1,129 @@
+// The project registry (D52). A project id is a hierarchical path with meaning
+// (D53), so this module is what says which paths are real and what an
+// unregistered path resolves to.
+syntax = "proto3";
+
+package yadgar.project.v1;
+
+import "google/protobuf/timestamp.proto";
+import "yadgar/common/v1/common.proto";
+
+enum ProjectStatus {
+  PROJECT_STATUS_UNSPECIFIED = 0;
+  PROJECT_STATUS_ACTIVE = 1;
+  PROJECT_STATUS_ARCHIVED = 2;
+}
+
+message Project {
+  yadgar.common.v1.Meta meta = 1;
+
+  // The canonical hierarchical path: "quinyx/forecast", or
+  // "quinyx/qwfm/forecast" for a service inside a monorepo (D53). This is the
+  // value that lands in every other entity's Meta.project_id.
+  string path = 16;
+
+  string display_name = 17;
+  ProjectStatus status = 18;
+
+  // Debounced, not written per request (D52). Its only consumer is D47's notice
+  // expiry, which reasons in days.
+  google.protobuf.Timestamp last_seen_at = 19;
+
+  // Former paths that still resolve here. A rename is an alias, never a rewrite
+  // of every record carrying the old path (D53).
+  repeated string aliases = 20;
+}
+
+message RegisterProjectRequest {
+  yadgar.common.v1.Idempotency idempotency = 1;
+  yadgar.common.v1.Scope scope = 2;
+  string path = 3;
+  string display_name = 4;
+}
+message RegisterProjectResponse {
+  yadgar.common.v1.Meta meta = 1;
+}
+
+// THE load-bearing rpc. Every scoped write resolves its candidate path here
+// first. An unregistered path returns its nearest registered ancestor rather
+// than an error, so a typo lands in a real parent and a new service directory
+// works before anyone registers it (D52 as amended by D53). Nothing is ever
+// auto-created.
+message ResolveProjectRequest {
+  yadgar.common.v1.Scope scope = 1;
+  string candidate_path = 2;
+}
+message ResolveProjectResponse {
+  // The path that will actually be stamped on the record.
+  string resolved_path = 1;
+  // False when candidate_path had no row of its own and an ancestor was used.
+  // The caller surfaces this as a D39 notice naming the id to register.
+  bool exact = 2;
+  // Set when candidate_path matched an alias rather than a live path.
+  bool via_alias = 3;
+  ProjectStatus status = 4;
+}
+
+message GetProjectRequest {
+  yadgar.common.v1.Scope scope = 1;
+  string path = 2;
+}
+message GetProjectResponse {
+  Project project = 1;
+}
+
+message ListProjectsRequest {
+  yadgar.common.v1.Scope scope = 1;
+  // Empty lists every project. Otherwise lists this subtree.
+  string under_path = 2;
+  optional ProjectStatus status = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+message ListProjectsResponse {
+  repeated Project projects = 1;
+  string next_page_token = 2;
+}
+
+// Debounced upstream in Valkey and flushed periodically (D52). Never called
+// once per request.
+message TouchProjectsRequest {
+  yadgar.common.v1.Scope scope = 1;
+  repeated string paths = 2;
+  google.protobuf.Timestamp seen_at = 3;
+}
+message TouchProjectsResponse {}
+
+// Adds the old path to aliases and moves the project. Records are untouched.
+message RenameProjectRequest {
+  yadgar.common.v1.Idempotency idempotency = 1;
+  yadgar.common.v1.Scope scope = 2;
+  string from_path = 3;
+  string to_path = 4;
+  uint64 expect_version = 5;
+}
+message RenameProjectResponse {
+  yadgar.common.v1.Meta meta = 1;
+}
+
+message ArchiveProjectRequest {
+  yadgar.common.v1.Idempotency idempotency = 1;
+  yadgar.common.v1.Scope scope = 2;
+  string path = 3;
+  uint64 expect_version = 4;
+}
+message ArchiveProjectResponse {
+  yadgar.common.v1.Meta meta = 1;
+}
+
+// Registration is administrative — GitOps or CLI, like configuration (D43).
+// Agents resolve and read; they never mint a partition key.
+service ProjectDbService {
+  rpc RegisterProject(RegisterProjectRequest) returns (RegisterProjectResponse);
+  rpc ResolveProject(ResolveProjectRequest) returns (ResolveProjectResponse);
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc TouchProjects(TouchProjectsRequest) returns (TouchProjectsResponse);
+  rpc RenameProject(RenameProjectRequest) returns (RenameProjectResponse);
+  rpc ArchiveProject(ArchiveProjectRequest) returns (ArchiveProjectResponse);
+}

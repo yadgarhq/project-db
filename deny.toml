@@ -1,0 +1,125 @@
+# D24: a stack composed only of permissively-licensed components must remain
+# viable end to end — no BSL or source-available component may become a hard
+# requirement. Many organisations refuse those by policy regardless of whether
+# the restriction would actually apply to them, and this project is meant to be
+# self-hosted by exactly those organisations.
+#
+# O10 instructs that the licence audit be re-run before adding any dependency.
+# That instruction lives in a document and depends on somebody remembering it;
+# this file is the same rule enforced by something that runs.
+
+[licenses]
+# Permissive only. A copyleft dependency is not automatically disqualifying —
+# MPL-2.0 is file-level and unencumbering as an unmodified dependency — but it
+# is a decision, so it belongs in an explicit exception below rather than in a
+# blanket allow.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+
+    # A DECIDED EXCEPTION, carried over from the modules that met it first:
+    # adding sqlx fails this gate on webpki-roots, and O10 says a new licence is
+    # a decision rather than an inconvenience — so here is the decision, restated
+    # rather than inherited silently.
+    #
+    # CDLA-Permissive-2.0 is a DATA licence, not a software one, which is why it
+    # was not already in a list of software licences. webpki-roots ships the
+    # Mozilla CA certificate bundle, and certificates are data. Version 2.0 is
+    # the permissive member of the family — no copyleft and no share-alike,
+    # unlike CDLA-Sharing — and its only obligation is retaining the disclaimer.
+    # It is neither BSL nor source-available, so D24 is satisfied.
+    #
+    # Not avoidable: it is a hard dependency of sqlx's tls-rustls features, and
+    # the alternative is native-tls, which D63 rules out.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+# The allowlist is a DECIDED set, not a description of today's tree. Entries
+# nothing currently uses are pre-approved judgements, not dead config, so an
+# unmatched allowance is not worth a warning. What must stay loud is a licence
+# NOT on the list — that is the O10 decision point.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+
+[advisories]
+yanked = "deny"
+
+# RUSTSEC-2023-0071 — "Marvin Attack", a timing sidechannel in the `rsa` crate.
+# ACCEPTED DELIBERATELY, with the reasoning written down rather than the finding
+# silenced. cargo-deny reports "No safe upgrade is available!" and
+# the advisory remains open upstream, so this is not a version bump anyone can
+# make.
+#
+# WHY IT IS NOT EXPLOITABLE HERE, and each of these would have to stop being
+# true for that to change:
+#
+# 1. The attack recovers a PRIVATE key by timing many decryptions. sqlx-mysql
+#    uses `rsa` on the CLIENT side to ENCRYPT a password with the server's
+#    public key. This process holds no RSA private key, so there is nothing for
+#    the attack to recover.
+# 2. That code path is only taken when authentication runs over an INSECURE
+#    connection. Over TLS the credential goes through the channel that already
+#    exists and the RSA exchange never happens — and D58 puts every `-db` on TLS
+#    to its engine.
+#
+#    THE CLAIM IS ABOUT EVERY CONNECTION THIS BINARY OPENS, which is what makes
+#    it checkable rather than a slogan. It was once false for exactly one of
+#    them: D58 covers the serving POOL, while D7's capability probe runs on a
+#    connection of its own, before the pool exists, built by `format!` with no
+#    `ssl-mode` in it — so it inherited sqlx's `Preferred` default, which falls
+#    back to an unencrypted connection when an encrypted one cannot be
+#    established. Found by reading this file against that code, not by an
+#    incident, in the module where it was found.
+#
+#    The probe and the pool are both built from `yadgar_store::pool::connect_options`
+#    — see `src/boot.rs` — so there is ONE description of a connection and one
+#    ssl-mode to check. This module was built that way rather than corrected into
+#    it; `task-db` shipped the two-descriptions defect and is where the reasoning
+#    below was measured. `DB_SSL_MODE` selects it, defaults to `required`,
+#    and refuses a value it does not recognise; `DB_REQUIRE_TLS` — a boolean
+#    whose parse read every spelling but `true` as DISABLED — refuses the boot
+#    rather than being ignored.
+#
+#    Two details of the mechanism, read from sqlx-mysql 0.9.0's
+#    `src/connection/auth.rs` rather than assumed:
+#
+#    - `encrypt_rsa` opens with `if stream.is_tls { return Ok(...) }`, so
+#      "skipped over TLS" is exactly right — for a connection that IS on TLS,
+#      and exactly wrong for one that fell back.
+#    - It is reached from `AuthPlugin::Sha256Password` and from
+#      caching_sha2_password's perform_full_authentication branch, so the
+#      trigger is wider than any single plugin.
+# 3. Both -db and engine sit inside the cluster (D27), so an attacker able to
+#    time this traffic is already inside the trust boundary.
+#
+# REVISIT: when `rsa` publishes a fixed release, when sqlx drops the dependency,
+# or if any of the three points above stops holding. Point 2 is a CONFIGURATION
+# property, not an invariant, and saying so is the honest form: setting
+# `DB_SSL_MODE` to `disabled`, or to `preferred` against an engine that will not
+# negotiate TLS, puts this path back in reach. What the code guarantees is that
+# one setting governs every connection the binary opens — not that nobody can
+# choose a mode that forfeits this exception.
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "client-side RSA encryption only; no private key held. Every connection this binary opens — the serving pool and D7's boot probe alike — is built from one set of options whose ssl-mode defaults to `required`, and TLS skips the path. No fix exists upstream. See the note above." },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+# yadgar-store is a git dependency pinned by revision (D62's argument for SHA
+# pins, applied to a crate). Git sources stay refused in general — an unpinned
+# one is a supply chain nobody reviews — and this allows exactly one GitHub
+# organisation, ours. A dependency from any other git host or org still fails.
+[sources.allow-org]
+github = ["yadgarhq"]

@@ -1,0 +1,5 @@
+# What this module vendors from yadgarhq/proto (D70). A subset, not the whole
+# set — buf closes the import graph itself, so listing yadgar/project/v1 also
+# brings yadgar/common/v1. Well-known types are not emitted; protoc supplies
+# them.
+yadgar/project/v1
