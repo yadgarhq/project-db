@@ -204,3 +204,74 @@ async fn a_deep_path_derived_from_a_full_directory_is_registrable() {
     assert_eq!(r.resolved_path, deep);
     assert!(!r.exact);
 }
+
+/// **THE ONE-WAY DOOR THIS TEST HOLDS SHUT.** `local` is the first segment of
+/// the private class above, so a project registered AT it becomes the nearest
+/// registered ancestor of every private path in the estate — and every one of
+/// them then resolves into it with `exact: false`, stamping one stranger's
+/// partition key on all of them. Registration is immutable here, because
+/// `RenameProject` is held back, so a `local` once claimed could never be
+/// renamed away.
+///
+/// The literals are spelled out rather than read from `path::RESERVED_ROOT`
+/// (ADR-0573): a test that references the constant under test moves with it and
+/// pins nothing.
+#[tokio::test]
+async fn the_reserved_private_class_root_is_not_registrable() {
+    let w = world("project_db_registry_reserved_root").await;
+
+    let err = w
+        .try_register("local", "an organisation called local")
+        .await
+        .expect_err("the root of the private class is not an organisation anybody may own");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert!(
+        err.message().contains("local"),
+        "a refusal names the value it refused rather than rewriting it (ADR-0569): {}",
+        err.message()
+    );
+    assert!(w.list("").await.is_empty(), "nothing was created");
+
+    // AND THE CLASS THE SEGMENT PROTECTS IS UNTOUCHED. A guard that reserved the
+    // PREFIX rather than the SEGMENT would pass every assertion above and delete
+    // the private class outright, which is the mutant this arm exists to catch.
+    w.try_register("local/home/max/src/alpha", "")
+        .await
+        .expect("a project beneath the reserved segment IS the private class");
+    w.try_register("locals", "a different organisation entirely")
+        .await
+        .expect("`locals` merely shares five characters; a prefix is not a segment");
+}
+
+/// **THE REFUSAL HAPPENS BEFORE THE IDEMPOTENCY KEY IS CLAIMED**, which is the
+/// ordering `src/write.rs` states for the two held-back verbs and takes here for
+/// the same reason: a key spent on an operation nobody performed would make the
+/// caller's later retry of a DIFFERENT request under it fail as a differing
+/// payload.
+/// The assertion is on the LEDGER rather than on a second call, and that is
+/// forced rather than chosen: a claim is keyed by `(project_id, user_id, key)`
+/// and the fixture stamps `scope.project_id` with the path under test, so a
+/// retry under another path would be a different row and would pass whatever
+/// this rpc did. Counting the rows for `local` is what actually distinguishes
+/// the two orderings.
+#[tokio::test]
+async fn the_reserved_root_is_refused_before_the_idempotency_key_is_spent() {
+    let w = world("project_db_registry_reserved_root_idem").await;
+
+    let err = w
+        .register_as("local", "", U1, Some("k-reserved"))
+        .await
+        .expect_err("the reserved segment is refused");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_write WHERE project_id = ?")
+        .bind("local")
+        .fetch_one(&w.pool)
+        .await
+        .expect("count the ledger");
+    assert_eq!(
+        claims, 0,
+        "the refusal must not have reached the ledger: a key spent on an operation nobody \
+         performed refuses the caller's next request under it as a differing payload"
+    );
+}

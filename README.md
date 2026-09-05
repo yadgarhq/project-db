@@ -185,6 +185,27 @@ is keyed on the full directory path rather than on its basename
 (`local/<basename>` collides between two unrelated directories of the same name).
 The client trims for length, never for depth.
 
+## `local` is reserved, and only the bare segment
+
+`local` is the first segment of the PRIVATE class of project ids above, so it is
+refused as a project of its own: `RegisterProject("local")` answers
+`INVALID_ARGUMENT` naming the value, and `ResolveProject` drops the segment from
+the ancestor walk. `local/<anything>` stays registrable — that is the class the
+reservation exists to carry, and the check is equality on the segment rather than
+a prefix match, so `locals` is an ordinary organisation.
+
+Both halves are needed and neither is redundant. Without the write-side refusal a
+project registered at `local` becomes the nearest registered ancestor of every
+private path in the estate, and each of them resolves into it with `exact: false`
+— one stranger's partition key stamped on all of them. Without the read-side
+filter that stays true for a row an earlier build already accepted, because a
+code guard does not delete rows; the filter closes the walk against the store as
+it is, which is why no migration is required to make this safe.
+
+The refusal ships ahead of the first caller rather than behind it because the
+door only opens one way: a registration here is immutable, `RenameProject` is
+held back, and a `local` once claimed could never be renamed away.
+
 ## The Service is headless, deliberately
 
 A normal Service balances at L4, and a gRPC client holds one long-lived HTTP/2

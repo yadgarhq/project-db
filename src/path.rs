@@ -57,6 +57,71 @@ use tonic::Status;
 /// declares.
 pub const MAX_LEN: usize = 255;
 
+/// The one segment RESERVED from the organisation namespace.
+///
+/// **THE PRIVATE CLASS OF PROJECT IDS LIVES UNDER THIS SEGMENT, WHICH IS
+/// PRECISELY WHY NOBODY MAY OWN IT.** A directory that is not a repository is
+/// registered beneath it and is visible only to the account that owns it; an
+/// organisation project is `<org>/<repo>` and is visible to everyone. The two
+/// classes share one namespace and are told apart by the FIRST SEGMENT alone.
+///
+/// **A REGISTRATION AT THE BARE SEGMENT WOULD SWALLOW THE WHOLE CLASS.** An
+/// unregistered path resolves to its nearest registered ANCESTOR rather than
+/// failing (D52 as amended by D53) — so with a row at `local`, every private
+/// path in the estate resolves to it with `exact: false`, and every scoped write
+/// is then stamped with one partition key belonging to whoever registered it
+/// first. That is the split-corpus failure of D52 arriving through the root of a
+/// namespace instead of through a typo.
+///
+/// **AND THE DOOR ONLY OPENS ONE WAY, which is why the guard lands before the
+/// first caller rather than after.** A registration is immutable in this estate:
+/// renaming is forbidden because every record already stamped with a path goes
+/// on carrying it, so `RenameProject` answers `UNIMPLEMENTED` (`crate::write`)
+/// and archiving is the only retirement there is. A `local` claimed by anybody
+/// could never be renamed away.
+pub const RESERVED_ROOT: &str = "local";
+
+/// Refuse the bare [`RESERVED_ROOT`], and only the bare segment.
+///
+/// **`local/<anything>` STAYS REGISTRABLE, and that is the whole precision of
+/// this check.** The reservation is about the ORGANISATION SEGMENT, not about
+/// the prefix: `local/home/max/git/alpha` IS the private class, and refusing it
+/// would delete the class the segment is reserved to carry. The comparison is
+/// equality rather than `starts_with` for the same reason [`ancestors`] splits
+/// on `/`: `locals` is a different organisation that merely shares five
+/// characters.
+///
+/// **IT IS NOT FOLDED INTO [`validate`], AND THAT IS A DECISION RATHER THAN A
+/// PLACEMENT.** [`validate`] asks whether a value is a project path at all, and
+/// `local` is a perfectly well-formed one; this asks whether a well-formed path
+/// may be OWNED. Folding the two together would apply the refusal to every
+/// caller of [`validate`] — including `TouchProjects`, which validates each path
+/// in a batch and refuses the whole flush on the first failure, on the stated
+/// ground that one bad path must never block the flush for every other project
+/// for ever. So the check is opt-in per call site, and the sites that take it
+/// are the two that can MINT or FOLLOW an ownership claim: `register` and
+/// `resolve`. `GetProject` and `ListProjects` deliberately do not, because an
+/// operator holding a store that already contains such a row needs to be able to
+/// see it.
+///
+/// **FAIL LOUD, NEVER COERCE (ADR-0569).** The refusal names the value rather
+/// than quietly rewriting it into something registrable: a silently rewritten
+/// identity is the same failure one layer down from the one this module exists
+/// to remove.
+pub fn refuse_reserved_root(what: &'static str, path: &str) -> Result<(), Status> {
+    if path == RESERVED_ROOT {
+        return Err(Status::invalid_argument(format!(
+            "{what} is {RESERVED_ROOT:?}, which is a RESERVED segment and is not an organisation. \
+             It is the first segment of the private class of project ids — a directory that is \
+             not a repository is registered beneath it — so a project owning it would be the \
+             nearest registered ancestor of every private path in the estate, and every one of \
+             them would resolve into it (D52, D53). Name the project itself, such as \
+             \"{RESERVED_ROOT}/home/you/src/thing\", or an organisation of your own"
+        )));
+    }
+    Ok(())
+}
+
 /// Every character a path segment may contain.
 ///
 /// Stated as a set rather than as "not these": an allowlist that meets an
@@ -144,6 +209,53 @@ mod tests {
     /// the contract's own worked examples, so a test built on them can be
     /// satisfied by an implementation that special-cases the documentation.
     const R: &str = "pangolin-7c21";
+
+    /// **THE RESERVED SEGMENT IS SPELLED OUT HERE AND NOWHERE READ FROM THE
+    /// CONSTANT UNDER TEST (ADR-0573).** A test that asserts against
+    /// [`RESERVED_ROOT`] moves the day somebody edits [`RESERVED_ROOT`], so it
+    /// pins the code to itself rather than to the decision. The literal is the
+    /// bound.
+    #[test]
+    fn the_reserved_root_is_refused_and_the_refusal_names_it() {
+        let err = refuse_reserved_root("path", "local")
+            .expect_err("the private class root is not an organisation anybody may own");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("local"),
+            "a refusal must name the value it refused rather than rewrite it (ADR-0569): {}",
+            err.message()
+        );
+    }
+
+    /// **THE RESERVATION IS ABOUT THE SEGMENT, NOT ABOUT THE PREFIX.** Refusing
+    /// `local/…` would delete the very class the segment is reserved to carry,
+    /// and refusing `locals` would refuse an organisation that merely shares
+    /// five characters — the same substring-is-not-a-hierarchy mistake
+    /// [`ancestors`] exists to avoid.
+    #[test]
+    fn a_project_beneath_the_reserved_root_and_a_look_alike_are_both_allowed() {
+        for allowed in [
+            "local/home/max/src/thing",
+            "local/x",
+            "locals",
+            "local-mirror",
+            "local.internal",
+            "notlocal",
+        ] {
+            refuse_reserved_root("path", allowed)
+                .unwrap_or_else(|e| panic!("{allowed:?} is not the reserved segment: {e}"));
+        }
+    }
+
+    /// **THE RESERVED ROOT IS A WELL-FORMED PATH, AND THE GRAMMAR STILL SAYS
+    /// SO.** [`validate`] answers "is this a project path"; the reservation
+    /// answers "may this path be OWNED". Folding the second into the first would
+    /// apply it to every caller of [`validate`] — including `TouchProjects`,
+    /// which refuses a whole flush on the first bad path.
+    #[test]
+    fn the_reserved_root_is_still_a_legal_path_to_the_grammar() {
+        validate("path", "local").expect("`local` is a legal path; what it is not is an owner");
+    }
 
     #[test]
     fn an_ancestor_chain_is_deepest_first_and_ends_at_the_root_segment() {

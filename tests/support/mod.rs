@@ -304,6 +304,46 @@ impl World {
         .expect("seed claim");
     }
 
+    /// A registration written straight into `project`, bypassing the rpc.
+    ///
+    /// **THE STATE THIS PRESENTS IS ONE A LIVE STORE MAY ALREADY HOLD, not a
+    /// contrivance.** `RegisterProject` refuses the reserved segment
+    /// (`src/path.rs`), and the build that shipped before it did not — so a row
+    /// at `local` is exactly what an existing database can contain, and a
+    /// code-only guard does not delete one. The read paths have to be closed
+    /// against that store, and writing the row is the only way to show it to
+    /// them.
+    ///
+    /// The id is DERIVED from the path rather than minted as a UUIDv7. All a
+    /// fixture needs is that two seeded rows never collide, and `path` is
+    /// UNIQUE, so a function of it is unique too — while a derived id also makes
+    /// a failing assertion name the row it is about instead of a random urn. It
+    /// is deliberately NOT the shape `register` produces: nothing should be able
+    /// to mistake a seeded row for one the service minted. The width is asserted
+    /// rather than truncated, because a fixture that silently loses half an id
+    /// is a test asserting against a row nobody meant to write.
+    pub async fn seed_project(&self, path: &str, created_by: &str) {
+        let id = format!("yadgar:project:seeded:{path}");
+        assert!(
+            id.len() <= 96,
+            "project.id is VARCHAR(96) and this fixture id is {} characters: {id}",
+            id.len()
+        );
+        sqlx::query(
+            "INSERT INTO project
+               (id, version, path, display_name, status, created_by, updated_by)
+             VALUES (?, 1, ?, '', ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(path)
+        .bind(ProjectStatus::Active as i8)
+        .bind(created_by)
+        .bind(created_by)
+        .execute(&self.pool)
+        .await
+        .expect("seed project");
+    }
+
     /// Give a project a former path, written straight into the table.
     ///
     /// **THERE IS NO RPC FOR THIS IN THIS RELEASE, ON PURPOSE.** `RenameProject`

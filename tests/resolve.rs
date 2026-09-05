@@ -185,6 +185,80 @@ async fn a_candidate_that_is_not_a_project_path_is_refused_before_any_lookup() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
+/// **THE RESOLUTION HAZARD THE WRITE-SIDE GUARD DOES NOT REACH.** `register`
+/// refuses `local` now, and a code-only guard does not delete a row an earlier
+/// build already accepted — so the store may HOLD one. If the walk still
+/// consulted it, every private-class path in the estate would resolve into one
+/// stranger's partition key with `exact: false`, and nothing would report it.
+///
+/// The row is seeded rather than registered for exactly that reason: it is the
+/// state of a real database, not a contrivance.
+#[tokio::test]
+async fn a_private_path_never_resolves_up_into_a_squatted_reserved_root() {
+    let w = world("project_db_resolve_reserved_squatted").await;
+    w.seed_project("local", "a-stranger").await;
+
+    let err = w
+        .resolve("local/home/max/src/alpha")
+        .await
+        .expect_err("the reserved segment is not an ancestor of anything, row or no row");
+    assert_eq!(err.code(), tonic::Code::NotFound);
+
+    // THE CONTROL, and it is what stops this test passing for the wrong reason.
+    // A guard that refused every path under the reserved segment would satisfy
+    // the assertion above and break the private class outright; here the walk
+    // still finds a real ancestor with the squatted row present, so what the
+    // filter removed is one segment rather than the subtree.
+    w.register("local/home/max/src/alpha").await;
+    let r = w
+        .resolve("local/home/max/src/alpha/svc")
+        .await
+        .expect("a registered private project is still an ancestor");
+    assert_eq!(r.resolved_path, "local/home/max/src/alpha");
+    assert!(!r.exact);
+}
+
+/// **THE SAME LINE COVERS THE ALIAS ARM, and it has to.** `ResolveProject` reads
+/// `project_alias` in the second half of one union, bound from the same ancestor
+/// list — so a former path at `local` is a second way into the identical
+/// failure. Dropping the segment from the chain closes both; a guard written
+/// against live paths alone would leave this open and no test would say so.
+#[tokio::test]
+async fn a_private_path_never_resolves_up_through_an_alias_at_the_reserved_root() {
+    let w = world("project_db_resolve_reserved_alias").await;
+    let id = w.register(B).await;
+    w.seed_alias("local", &id).await;
+
+    let err = w
+        .resolve("local/home/max/src/alpha")
+        .await
+        .expect_err("a former path at the reserved segment is not an ancestor either");
+    assert_eq!(err.code(), tonic::Code::NotFound);
+}
+
+/// **THE CANDIDATE THAT WOULD EMPTY THE CHAIN.** The reserved segment is
+/// filtered out of the ancestor walk, so the bare segment would filter down to
+/// nothing — and an empty `IN ()` is a syntax error the caller receives as
+/// `INTERNAL "storage error"`. It is refused ahead of the walk instead, with the
+/// reason in it.
+#[tokio::test]
+async fn the_bare_reserved_root_is_refused_as_a_candidate_rather_than_failing_inside() {
+    let w = world("project_db_resolve_reserved_bare").await;
+    w.register(ROOT).await;
+
+    let err = w
+        .resolve("local")
+        .await
+        .expect_err("the reserved segment names no project");
+    assert_eq!(
+        err.code(),
+        tonic::Code::InvalidArgument,
+        "an empty ancestor list must not reach the engine as `IN ()`: {}",
+        err.message()
+    );
+    assert!(err.message().contains("local"), "{}", err.message());
+}
+
 #[tokio::test]
 async fn an_absent_scope_is_refused() {
     let w = world("project_db_resolve_no_scope").await;
