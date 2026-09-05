@@ -57,6 +57,101 @@ use tonic::Status;
 /// declares.
 pub const MAX_LEN: usize = 255;
 
+/// The one segment RESERVED from the organisation namespace.
+///
+/// **THE PRIVATE CLASS OF PROJECT IDS LIVES UNDER THIS SEGMENT, WHICH IS
+/// PRECISELY WHY NOBODY MAY OWN IT.** A directory that is not a repository is
+/// registered beneath it and is visible only to the account that owns it; an
+/// organisation project is `<org>/<repo>` and is visible to everyone. The two
+/// classes share one namespace and are told apart by the FIRST SEGMENT alone.
+///
+/// **A REGISTRATION AT THE BARE SEGMENT WOULD SWALLOW THE WHOLE CLASS.** An
+/// unregistered path resolves to its nearest registered ANCESTOR rather than
+/// failing (D52 as amended by D53) — so with a row at `local`, every private
+/// path in the estate resolves to it with `exact: false`, and every scoped write
+/// is then stamped with one partition key belonging to whoever registered it
+/// first. That is the split-corpus failure of D52 arriving through the root of a
+/// namespace instead of through a typo.
+///
+/// **AND THE DOOR ONLY OPENS ONE WAY, which is why the guard lands before the
+/// first caller rather than after.** A registration is immutable in this estate:
+/// renaming is forbidden because every record already stamped with a path goes
+/// on carrying it, so `RenameProject` answers `UNIMPLEMENTED` (`crate::write`)
+/// and archiving is the only retirement there is. A `local` claimed by anybody
+/// could never be renamed away.
+pub const RESERVED_ROOT: &str = "local";
+
+/// Refuse the bare [`RESERVED_ROOT`], and only the bare segment.
+///
+/// **`local/<anything>` STAYS REGISTRABLE, and that is the whole precision of
+/// this check.** The reservation is about the ORGANISATION SEGMENT, not about
+/// the prefix: `local/home/max/git/alpha` IS the private class, and refusing it
+/// would delete the class the segment is reserved to carry. The comparison is
+/// equality rather than `starts_with` for the same reason [`ancestors`] splits
+/// on `/`: `locals` is a different organisation that merely shares five
+/// characters.
+///
+/// **THE EQUALITY IS ASCII-CASE-INSENSITIVE, AND THE STORE IS WHAT DECIDES
+/// THAT.** `project.path` and `project_alias.alias_path` are declared
+/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE` (`crate::schema`, migration 1),
+/// so they take the server default — measured `utf8mb4_uca1400_ai_ci` on
+/// MariaDB 11.8, which is case- AND accent-insensitive. `uq_project_path`
+/// therefore holds ONE slot for every ASCII-case spelling of the segment, so a
+/// byte-exact comparison here lets `LOCAL` pass the guard, reach the INSERT and
+/// occupy the reserved slot — permanently, because the retirement the paragraph
+/// above names is not shipped either: `crate::write` holds BOTH `RenameProject`
+/// and `ArchiveProject` at `UNIMPLEMENTED` in this release. Folding case is what
+/// closes that; the door is meant to open one way and this is the half of it a
+/// byte comparison left open.
+///
+/// **ASCII CASE IS THE WHOLE OF WHAT THE COLLATION FOLDS HERE, and that is a
+/// property of the GRAMMAR rather than of this line.** The accent-insensitive
+/// half has nothing to act on, because [`validate`] runs before this at both
+/// call sites and admits only `[A-Za-z0-9._-]` — no accented character ever
+/// reaches the comparison. Measured on the same engine, within that alphabet:
+/// `lo-cal`, `l.ocal` and `lo_cal` all compare UNEQUAL to `local`, and `LoCaL`
+/// compares equal. So no migration is needed to make this safe, and
+/// `the_segment_alphabet_is_ascii_only_which_is_what_bounds_the_collation_guard`
+/// reddens if anybody widens the alphabet out from under that reasoning.
+///
+/// **IT IS NOT FOLDED INTO [`validate`], AND THAT IS A DECISION RATHER THAN A
+/// PLACEMENT.** [`validate`] asks whether a value is a project path at all, and
+/// `local` is a perfectly well-formed one; this asks whether a well-formed path
+/// may be OWNED. Folding the two together would apply the refusal to every
+/// caller of [`validate`] — including `TouchProjects`, which validates each path
+/// in a batch and refuses the whole flush on the first failure, on the stated
+/// ground that one bad path must never block the flush for every other project
+/// for ever. So the check is opt-in per call site, and the sites that take it
+/// are the two that can MINT or FOLLOW an ownership claim: `register` and
+/// `resolve`. `GetProject` and `ListProjects` deliberately do not, because an
+/// operator holding a store that already contains such a row needs to be able to
+/// see it.
+///
+/// **FAIL LOUD, NEVER COERCE (ADR-0569).** The refusal names the value rather
+/// than quietly rewriting it into something registrable: a silently rewritten
+/// identity is the same failure one layer down from the one this module exists
+/// to remove.
+pub fn refuse_reserved_root(what: &'static str, path: &str) -> Result<(), Status> {
+    if path.eq_ignore_ascii_case(RESERVED_ROOT) {
+        // THE CALLER'S OWN SPELLING, not the constant. Answering `LOCAL` with a
+        // message that says `"local"` tells somebody their value was something
+        // it was not, which is the quiet rewriting of an identity ADR-0569
+        // refuses. Safe to echo: anything reaching this branch is the length of
+        // `RESERVED_ROOT`, so the no-echo rule `validate` applies to an
+        // over-long value has nothing to protect here.
+        return Err(Status::invalid_argument(format!(
+            "{what} is {path:?}, which is the RESERVED segment {RESERVED_ROOT:?} and is not an \
+             organisation — the store folds ASCII case, so every spelling of it is one key. \
+             It is the first segment of the private class of project ids — a directory that is \
+             not a repository is registered beneath it — so a project owning it would be the \
+             nearest registered ancestor of every private path in the estate, and every one of \
+             them would resolve into it (D52, D53). Name the project itself, such as \
+             \"{RESERVED_ROOT}/home/you/src/thing\", or an organisation of your own"
+        )));
+    }
+    Ok(())
+}
+
 /// Every character a path segment may contain.
 ///
 /// Stated as a set rather than as "not these": an allowlist that meets an
@@ -144,6 +239,139 @@ mod tests {
     /// the contract's own worked examples, so a test built on them can be
     /// satisfied by an implementation that special-cases the documentation.
     const R: &str = "pangolin-7c21";
+
+    /// **THE RESERVED SEGMENT IS SPELLED OUT HERE AND NOWHERE READ FROM THE
+    /// CONSTANT UNDER TEST (ADR-0573).** A test that asserts against
+    /// [`RESERVED_ROOT`] moves the day somebody edits [`RESERVED_ROOT`], so it
+    /// pins the code to itself rather than to the decision. The literal is the
+    /// bound.
+    #[test]
+    fn the_reserved_root_is_refused_and_the_refusal_names_it() {
+        let err = refuse_reserved_root("path", "local")
+            .expect_err("the private class root is not an organisation anybody may own");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("local"),
+            "a refusal must name the value it refused rather than rewrite it (ADR-0569): {}",
+            err.message()
+        );
+    }
+
+    /// **THE RESERVATION IS ABOUT THE SEGMENT, NOT ABOUT THE PREFIX.** Refusing
+    /// `local/…` would delete the very class the segment is reserved to carry,
+    /// and refusing `locals` would refuse an organisation that merely shares
+    /// five characters — the same substring-is-not-a-hierarchy mistake
+    /// [`ancestors`] exists to avoid.
+    #[test]
+    fn a_project_beneath_the_reserved_root_and_a_look_alike_are_both_allowed() {
+        for allowed in [
+            "local/home/max/src/thing",
+            "local/x",
+            "locals",
+            "local-mirror",
+            "local.internal",
+            "notlocal",
+        ] {
+            refuse_reserved_root("path", allowed)
+                .unwrap_or_else(|e| panic!("{allowed:?} is not the reserved segment: {e}"));
+        }
+    }
+
+    /// **THE RESERVED ROOT IS A WELL-FORMED PATH, AND THE GRAMMAR STILL SAYS
+    /// SO.** [`validate`] answers "is this a project path"; the reservation
+    /// answers "may this path be OWNED". Folding the second into the first would
+    /// apply it to every caller of [`validate`] — including `TouchProjects`,
+    /// which refuses a whole flush on the first bad path.
+    #[test]
+    fn the_reserved_root_is_still_a_legal_path_to_the_grammar() {
+        validate("path", "local").expect("`local` is a legal path; what it is not is an owner");
+    }
+
+    /// **A BYTE-EXACT REFUSAL LEAVES THE DOOR OPEN ONE SHIFT KEY AWAY.**
+    /// `project.path` is declared `DEFAULT CHARSET=utf8mb4` with NO `COLLATE`
+    /// (`crate::schema`, migration 1), so it takes the server default — measured
+    /// `utf8mb4_uca1400_ai_ci` on MariaDB 11.8, which is case-insensitive. So
+    /// `uq_project_path` holds ONE slot for every ASCII-case spelling of the
+    /// segment, and a registration at `LOCAL` occupies the reserved slot for
+    /// ever: `crate::write` holds both `RenameProject` and `ArchiveProject` at
+    /// `UNIMPLEMENTED` in this release, so nothing can retire it.
+    ///
+    /// **THE REFUSAL NAMES WHAT THE CALLER SENT, NOT THE CONSTANT.** Echoing
+    /// `local` back at somebody who typed `LOCAL` is the quiet rewriting of an
+    /// identity that ADR-0569 refuses, and it would tell them their value was
+    /// something it was not.
+    ///
+    /// The spellings are literals rather than derived from [`RESERVED_ROOT`]
+    /// (ADR-0573).
+    #[test]
+    fn every_ascii_case_spelling_of_the_reserved_root_is_refused_and_named() {
+        for sent in ["LOCAL", "LoCaL", "Local", "locaL"] {
+            let err = refuse_reserved_root("path", sent)
+                .expect_err("the collation makes this the same key as `local`");
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{sent:?}");
+            assert!(
+                err.message().contains(sent),
+                "the refusal must name the value the caller sent rather than the constant \
+                 (ADR-0569): {}",
+                err.message()
+            );
+        }
+    }
+
+    /// **THE GUARD IS COMPLETE ONLY BECAUSE THIS ALPHABET IS ASCII-ONLY, AND
+    /// THIS TEST IS WHAT KEEPS THAT TRUE.** `project.path` collates
+    /// `utf8mb4_uca1400_ai_ci` — case-insensitive AND accent-insensitive — so
+    /// any two spellings that collate equal share one `uq_project_path` slot.
+    /// [`refuse_reserved_root`] answers only the CASE half of that, with
+    /// `eq_ignore_ascii_case`. The accent half needs no answer, and the reason is
+    /// this set rather than that function: no accented character can appear in a
+    /// segment at all, so nothing that would fold onto an ASCII letter ever
+    /// reaches the comparison. Within the alphabet below ASCII case is the whole
+    /// of what the collation folds — `lo-cal`, `l.ocal` and `lo_cal` all compare
+    /// UNEQUAL to `local` on a live MariaDB 11.8, and `LoCaL` compares equal.
+    ///
+    /// So widening the alphabet by one non-ASCII character reddens this test, and
+    /// that is the entire point of it: the reader is sent back to
+    /// [`refuse_reserved_root`] to ask what else the collation now folds.
+    ///
+    /// The same shape as [`an_underscore_is_a_legal_segment_character`], which
+    /// exists so that NARROWING the grammar cannot silently retire
+    /// `sql::subtree`'s LIKE escaping. The alphabet is written out as a literal
+    /// rather than read from the implementation (ADR-0573).
+    #[test]
+    fn the_segment_alphabet_is_ascii_only_which_is_what_bounds_the_collation_guard() {
+        const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-";
+
+        // EVERY Unicode scalar value, not a sample: the claim is that NO
+        // non-ASCII character is legal, and a sample cannot make it.
+        //
+        // The character is embedded after an `x` so that the whole-segment rule —
+        // `"."` and `".."` are refused as segments in their own right — does not
+        // answer here for the alphabet. That rule is pinned by
+        // `the_shapes_that_are_not_paths_are_refused`.
+        let mut segment = String::with_capacity(8);
+        for code in 0u32..=0x0010_FFFF {
+            let Some(c) = char::from_u32(code) else {
+                continue;
+            };
+            segment.clear();
+            segment.push('x');
+            segment.push(c);
+            assert_eq!(
+                segment_is_legal(&segment),
+                ALPHABET.contains(c),
+                "a segment admits exactly {ALPHABET:?} and {c:?} (U+{code:04X}) disagrees. If \
+                 the widening is deliberate, re-read `refuse_reserved_root`: the column collates \
+                 accent-insensitively, and only an ASCII-only alphabet keeps ASCII case the whole \
+                 of what that guard has to fold"
+            );
+        }
+
+        // THE SAME DOOR, stated through the public function, so that the two
+        // cannot drift into meaning different things.
+        validate("path", &format!("{R}/a-b_c.d")).expect("the alphabet is legal in a segment");
+        validate("path", &format!("{R}/café")).expect_err("a non-ASCII letter is not a segment");
+    }
 
     #[test]
     fn an_ancestor_chain_is_deepest_first_and_ends_at_the_root_segment() {

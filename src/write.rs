@@ -96,6 +96,18 @@ impl ProjectDb {
     ) -> Result<RegisterProjectResponse, Status> {
         let scope = scope_of(&req.scope)?;
         path::validate("path", &req.path)?;
+        // THE RESERVED SEGMENT, REFUSED BEFORE THE TRANSACTION OPENS AND
+        // THEREFORE BEFORE D9'S CLAIM — the same ordering the two held-back
+        // verbs take, and for the same reason: a refusal that had already
+        // claimed an idempotency key would spend that key on an operation nobody
+        // performed. `local` is the root of the PRIVATE class of project ids, so
+        // a project owning it becomes the nearest registered ancestor of every
+        // private path in the estate and swallows all of them — see
+        // `path::RESERVED_ROOT` for the whole of the argument. Registration is
+        // immutable here, because rename is held back, so that door only opens
+        // one way; the guard therefore ships AHEAD of the first caller of this
+        // rpc rather than behind it.
+        path::refuse_reserved_root("path", &req.path)?;
         // EMPTY IS LEGITIMATE. A display name is presentation, and a project
         // whose name is its path is a perfectly ordinary registration — the path
         // is the identity and it is already required. What is refused is a value
