@@ -22,7 +22,7 @@ repos:
   # at first install and never re-resolves it, so a moving tag would silently
   # freeze each machine at whatever it meant the day it first ran.
   - repo: https://github.com/yadgarhq/actions
-    rev: v1.12.0
+    rev: v1.13.1
     hooks:
       - id: gitleaks
       - id: prettier
@@ -36,9 +36,18 @@ repos:
       # (ledger 620). A repository with a `.github/workflows/` and no such line
       # is one whose workflows nothing reads.
       #
-      # It is `language: system`, so `actionlint` must be on PATH locally as
-      # well. That is the point rather than a nuisance: a check that runs in CI
-      # and not on a laptop is two definitions of clean.
+      # `actionlint` must be on PATH locally as well as in CI. That is the point
+      # rather than a nuisance: a check that runs in CI and not on a laptop is
+      # two definitions of clean.
+      #
+      # AND THE HOOK NOW REFUSES A THIRD STATE. At v1.12.0 this entry was a bare
+      # `language: system` call on the binary, and actionlint SILENTLY DISABLES
+      # its whole shellcheck rule class when shellcheck is absent — so on a
+      # machine without it this line reported `Passed` having linted every
+      # `run:` block with nothing. v1.12.2 replaced the entry with
+      # `hooks/actionlint.sh`, which feeds a stub whose only defect is SC2086
+      # and refuses unless SC2086 comes back (ledger 636). This repository was
+      # the only one in the estate still running the unguarded form.
       - id: actionlint
       - id: cargo-fmt
       - id: cargo-clippy
