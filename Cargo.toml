@@ -70,7 +70,11 @@ uuid = { version = "1", features = ["v7"] }
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `time` is STATED rather than inherited. `tests/touch.rs` sleeps to hold a
+# transaction open across a flush, and today that compiles only because sqlx
+# turns the feature on somewhere else in the graph — the same undeclared
+# dependency `DEFAULT_POOL_SIZE` refuses to rely on.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # `tests/serve_tls.rs` proves the serving transport with REAL handshakes, so it
 # needs a gRPC CLIENT to handshake with — which the shipped binary has no use
 # for, since this module only ever answers.
