@@ -35,7 +35,7 @@ prost-types = "0.14"
 # crate. `v0.1.2` is `v0.1.1` with its own vendored proto pin moved to v1.10.2 —
 # a provable no-op, taken because a new repository pinning a stale tag is a
 # choice that would need a reason and has none.
-yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.1.2", features = ["grpc"] }
+yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.1.5", features = ["grpc"] }
 # WHICH SIGNALS END THIS PROCESS, and the ADR-0523 rotation watcher, decided once
 # for the estate rather than once per repository (ADR-0526's pin, D19's rule).
 #
