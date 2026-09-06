@@ -35,7 +35,10 @@
 //! that without a recorder — so the metric is proved by the value it would
 //! carry rather than by a second dev-dependency.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier, OnceLock};
 
 use rcgen::{
     date_time_ymd, BasicConstraints, CertificateParams, CertifiedIssuer, DnType,
@@ -51,19 +54,50 @@ use yadgar_project_db::rotate::{self, Configuration, Presented};
 /// would report an expiry ten years out.
 const LEAF_NOT_AFTER: i64 = 1_813_017_600; // 2027-06-15T00:00:00Z
 
+/// One reading of the clock per PROCESS, so two runs that the OS gave the same
+/// recycled pid do not name the same directories. It varies per run and never
+/// within one, which is what leaves [`unique_name`] with exactly one varying
+/// part.
+fn run_id() -> u128 {
+    static RUN: OnceLock<u128> = OnceLock::new();
+    *RUN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    })
+}
+
+/// The name of one temporary directory, built from a PREFIX and unique within
+/// this process by CONSTRUCTION.
+///
+/// **THE CLOCK IS NOT A UNIQUENESS SOURCE ACROSS THREADS, and this is measured
+/// on this tree rather than assumed.** The name used to be `pid` plus a fresh
+/// nanosecond reading. Every test in this binary shares the pid and they run on
+/// threads, so two concurrent calls collide whenever both readings land on the
+/// same nanosecond — and `create_dir_all` does not error on the collision, so
+/// two tests proceed against the same directory until one `Drop` deletes it out
+/// from under the other. A clock is a timestamp, not a nonce (ledger 710,
+/// sibling of ledger 629 fixed in `tests/serve_tls.rs`).
+///
+/// The counter is the ONLY part that varies within a run, which is what makes
+/// the property assertable rather than merely likely.
+fn unique_name(prefix: &str) -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{prefix}-{}-{}-{}",
+        std::process::id(),
+        run_id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// A directory that deletes itself, standing in for the mount.
 struct Mount(PathBuf);
 
 impl Mount {
     fn new(files: &[(&str, String)]) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "yadgar-project-db-assembly-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = std::env::temp_dir().join(unique_name("yadgar-project-db-assembly"));
         std::fs::create_dir_all(&path).unwrap();
         for (name, contents) in files {
             std::fs::write(path.join(name), contents).unwrap();
@@ -125,14 +159,7 @@ fn mount() -> Mount {
 /// ConfigMaps land in separate directories in the real deployment and nothing
 /// here should suggest otherwise.
 fn configuration() -> Configuration {
-    let root = std::env::temp_dir().join(format!(
-        "yadgar-project-db-assembly-config-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let root = std::env::temp_dir().join(unique_name("yadgar-project-db-assembly-config"));
     std::fs::create_dir_all(root.join("shared")).unwrap();
     std::fs::write(
         root.join("shared").join("shared.yaml"),
@@ -334,5 +361,46 @@ fn the_chart_mounts_the_shared_configmap_where_this_binary_looks_for_it() {
          this chart's deployment.yaml names {shared_dir} as its mountPath — a pod would exit \
          at boot naming a path this chart never mounts",
         mounted.path().display()
+    );
+}
+
+/// THE CONCURRENT PROPERTY, which is the one that reproduces the defect
+/// (ledger 710, sibling of ledger 629 fixed in `tests/serve_tls.rs`). Every
+/// test in this binary shares a pid, and cross-thread readings of
+/// `SystemTime::now()` repeat constantly — same-thread ones do not, which is
+/// why only a threaded assertion can see it. Two concurrent [`Mount::new`] or
+/// [`configuration`] calls that land on the same nanosecond get the same
+/// directory: `create_dir_all` does not error on the collision, and whichever
+/// finishes first runs its `Drop` and deletes the directory out from under
+/// the other.
+#[test]
+fn concurrent_names_are_all_distinct() {
+    const THREADS: usize = 16;
+    const PER_THREAD: usize = 2000;
+
+    let start = Arc::new(Barrier::new(THREADS));
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let start = Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                (0..PER_THREAD)
+                    .map(|_| unique_name("yadgar-project-db-assembly"))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+
+    let all: Vec<String> = handles
+        .into_iter()
+        .flat_map(|h| h.join().unwrap())
+        .collect();
+    let distinct: HashSet<&String> = all.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        THREADS * PER_THREAD,
+        "{} of {} names collided across {THREADS} threads",
+        THREADS * PER_THREAD - distinct.len(),
+        THREADS * PER_THREAD
     );
 }
