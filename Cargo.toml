@@ -47,7 +47,7 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # about. Taking the watcher without `drain_within` is the bug rather than half
 # the fix — tokio never unregisters a libc signal handler, so once the rotation
 # arm wins the `select!` a later SIGTERM is swallowed and only SIGKILL remains.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.0" }
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.3" }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
