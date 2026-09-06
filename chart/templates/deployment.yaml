@@ -172,6 +172,36 @@ spec:
             - name: grpc
               containerPort: 50051
           env:
+            # THE THREE THE BINARY USED TO INVENT (ADR-0569, ledger 715). Until
+            # now `main` read `LISTEN`, `METRICS_LISTEN` and `DB_PASSWORD_FILE`
+            # through an `env_or(key, default)` helper, so this chart rendering
+            # none of them was invisible: the pod booted on constants no operator
+            # could see, and no values override could reach them. Each value below
+            # is BYTE-IDENTICAL to the default deleted in the same change, which
+            # is what makes chart and binary safe to ship in one merge under
+            # ADR-0576 rather than two under ADR-0572.
+            - name: LISTEN
+              value: "0.0.0.0:50051"
+            # `9090` IS THE `prometheus.io/port` ANNOTATION, said twice, and the
+            # same coupling: the annotation tells Prometheus where to scrape and
+            # this tells the process where to export. A change to one is a change
+            # to both.
+            - name: METRICS_LISTEN
+              value: "0.0.0.0:9090"
+            # `/var/run/secrets/project-db` IS THE `db-password` VOLUME MOUNT
+            # below, said twice — a directory the kubelet mounts and a path the
+            # process opens, with nothing in Kubernetes relating them.
+            #
+            # THE `password` BASENAME IS NOT THIS CHART'S TO CHOOSE. The volume
+            # mounts the Secret whole, with no `items:`, so each KEY inside
+            # `database.passwordSecret` becomes a file of that name. This value
+            # names the key `password`, which is what `yadgarhq/deploy`'s
+            # `infra/databases/project-db.yaml` asks the operator to generate
+            # (`passwordSecretKeyRef: {name: project-db-password, key: password}`);
+            # a Secret storing the credential under any other key needs this path
+            # changed to match it.
+            - name: DB_PASSWORD_FILE
+              value: "/var/run/secrets/project-db/password"
             - name: DB_HOST
               value: {{ .Values.database.host | quote }}
             - name: DB_PORT
@@ -285,6 +315,10 @@ spec:
             - name: config-project-db
               mountPath: /etc/yadgar/config/project-db
               readOnly: true
+            # THE OTHER HALF OF `DB_PASSWORD_FILE` in the env block above. This
+            # mountPath and that value's directory are one path written twice, and
+            # since ADR-0569 deleted the binary's compiled-in path there is no
+            # third copy — but these two must still be changed together.
             - name: db-password
               mountPath: /var/run/secrets/project-db
               readOnly: true
