@@ -137,7 +137,7 @@ impl ProjectDb {
         // A PATH THAT IS ALREADY A FORMER PATH IS TAKEN. Registering there would
         // make one path mean two things — the split-corpus failure D52 is about,
         // arriving through the alias table instead of through a typo.
-        if let Some(owner) = locked_alias_owner(&mut tx, &req.path).await? {
+        if let Some(owner) = alias_owner(&mut tx, &req.path).await? {
             tx.rollback().await.map_err(internal)?;
             return Err(Status::already_exists(format!(
                 "{:?} is a former path of the project {owner} and still resolves to it (D53). \
@@ -236,10 +236,53 @@ impl ProjectDb {
     /// bucket accumulating a path that resolves to nothing is a real fault
     /// upstream and the only place it can be seen is here.
     ///
-    /// **THE COUNT AND THE UPDATE ARE ONE TRANSACTION**, because D5 says so and
-    /// because two acquires from the pool would read two snapshots — so the
-    /// number in the warning would describe a registry that no longer existed by
-    /// the time the update ran.
+    /// **THE COUNT AND THE UPDATE ARE ONE TRANSACTION**, because D5 says so.
+    ///
+    /// **AND THE COUNT RUNS SECOND, WHICH IS THE HALF ONE TRANSACTION DOES NOT
+    /// BUY.** This used to count first, on the stated ground that one
+    /// transaction was what kept the two statements describing one registry. A
+    /// transaction gives ATOMICITY, not a shared view: a plain `SELECT` opens
+    /// InnoDB's read view, and an `UPDATE` after it is a CURRENT read that sees
+    /// the latest committed rows instead. So the two statements read two
+    /// different registries while sitting in one transaction — the outcome the
+    /// old comment named as the one it had ruled out.
+    ///
+    /// MariaDB does not answer that quietly. Measured on `mariadb:11.8.9` at the
+    /// stock `REPEATABLE READ`, with a second session committing between the two
+    /// statements, the `UPDATE` raises **`ERROR 1020 (HY000) Record has changed
+    /// since last read in table 'project'; try restarting transaction`** —
+    /// ER_CHECKREAD — and the whole flush fails. Two reachers, both measured:
+    /// another `TouchProjects` naming a path this one also names, which is the
+    /// ORDINARY case for a debounced flush several instances perform
+    /// independently (D52); and a `RegisterProject` of a path this flush names.
+    /// 1020 is neither 1205 nor 1213 and reports SQLSTATE HY000, so
+    /// [`internal`] renders it `INTERNAL "storage error"` — a retryable
+    /// serialisation conflict reported to the caller as a permanent fault.
+    ///
+    /// Counting AFTER the update takes the read view out from in front of the
+    /// write. The update is then the transaction's first statement and opens no
+    /// snapshot; the count is the first consistent read, so it sees the latest
+    /// committed registry PLUS this transaction's own writes — which is the
+    /// number the warning was always supposed to carry. Measured on the same
+    /// engine and the same interleaving: no error, the update matching 2 and the
+    /// count answering 2, where the old order raised 1020.
+    ///
+    /// **WHAT THE NEW ORDER STILL CANNOT SEE, said rather than left to be
+    /// rediscovered.** A registration committed between the update and the count
+    /// is counted and was not updated, so the flush stays silent about a path
+    /// whose `last_seen_at` did not move. That is the benign direction: the next
+    /// flush advances it and no warning cries wolf. The old order failed in the
+    /// loud direction and then failed outright.
+    ///
+    /// **`rows_affected()` IS NOT THE NUMBER EITHER**, which is why the count is
+    /// a second statement rather than deleted. The update carries the monotonic
+    /// guard, so a path already holding a NEWER `last_seen_at` resolves to a
+    /// project and changes nothing — counting the update's own rows would report
+    /// it as a path that resolves to none. A locking `COUNT` would agree with the
+    /// update exactly, and is refused for the reason ADR-0513 gives: it takes
+    /// shared locks on every matched row and gap locks on every path with no row,
+    /// which serialises flushes against each other and against
+    /// `RegisterProject`.
     pub(crate) async fn touch(
         &self,
         req: TouchProjectsRequest,
@@ -296,14 +339,8 @@ impl ProjectDb {
 
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
-        let mut counted = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
-            "SELECT COUNT(*) FROM project WHERE {matches}"
-        )));
-        for path in paths.iter().chain(paths.iter()) {
-            counted = counted.bind(*path);
-        }
-        let matched: i64 = counted.fetch_one(&mut *tx).await.map_err(internal)?;
-
+        // THE WRITE FIRST, so that no read view stands in front of it. See this
+        // function's documentation for the measurement.
         let sql = format!(
             "UPDATE project SET last_seen_at = FROM_UNIXTIME(?)
               WHERE {matches}
@@ -318,6 +355,14 @@ impl ProjectDb {
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
+
+        let mut counted = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM project WHERE {matches}"
+        )));
+        for path in paths.iter().chain(paths.iter()) {
+            counted = counted.bind(*path);
+        }
+        let matched: i64 = counted.fetch_one(&mut *tx).await.map_err(internal)?;
 
         tx.commit().await.map_err(internal)?;
 
@@ -401,13 +446,33 @@ fn meta_of(id: &str, version: u64, path: &str, actor: &str) -> Meta {
     }
 }
 
-/// Which project, if any, holds `alias` as a former path — with the row, or the
-/// GAP where it would go, locked until this transaction ends.
+/// Which project, if any, holds `alias` as a former path.
 ///
-/// **THE `FOR UPDATE` GUARDS NOTHING REACHABLE IN THIS RELEASE, AND IT IS NOT THE
-/// SHAPE THE RENAME VERB SHOULD COPY.** Removing it kills no test here, because
-/// `RenameProject` is held back and nothing else writes `project_alias` — there
-/// is no concurrent writer for a plain `SELECT` to miss.
+/// **THIS IS A NON-LOCKING READ GATING THE `INSERT` ABOVE IT, WHICH IS A RACE
+/// THIS RELEASE HAS NO WRITER FOR — and the reason matters, because the reason
+/// the comment used to give was false.** It said "`RenameProject` is held back
+/// and nothing else writes `project_alias`". `tests/support/mod.rs`'s
+/// `seed_alias` writes it, on its own connection, and says in as many words that
+/// it exists because no rpc can. A premise phrased as "nothing writes this" is
+/// the premise `iam-db#36` found false in its own repository, fifty lines below
+/// the comment that made it.
+///
+/// The claim that survives the grep is narrower and is the one that holds: no
+/// SERVED rpc writes `project_alias` in this release, so nothing a caller can
+/// reach commits an alias between this read and the `INSERT`. A fixture writing
+/// one before or after a `register` is sequential with it and cannot land inside
+/// the window. When `RenameProject` returns, the window opens, and the read
+/// alone will no longer be enough.
+///
+/// **THE FIX THE SIBLING REPOSITORIES USE IS THE WRONG ONE HERE, which is why
+/// this is described rather than closed.** The borrowed shape moves the
+/// predicate into the write under `LOCK IN SHARE MODE`, and it is free only
+/// where the row EXISTS. Here the common path is the ABSENT alias, so a locking
+/// read takes a gap lock on nothing — the construction the paragraphs below
+/// measure and ADR-0513 forbids, and the one a previous revision of this
+/// function deliberately deleted. The shape that closes it is the INSERT-FIRST
+/// one named at the end of this comment, and it belongs to the verb that opens
+/// the window rather than to this release.
 ///
 /// An earlier revision of this comment said the lock was "a claim on the
 /// ABSENCE" and offered it as the statement the rename verb should return to.
@@ -433,8 +498,11 @@ fn meta_of(id: &str, version: u64, path: &str, actor: &str) -> Meta {
 /// So the `FOR UPDATE` is GONE rather than kept-and-disclaimed. A lock whose own
 /// doc comment says it guards nothing is the next reader's trap: they keep it
 /// because it looks deliberate. The read is a plain lookup, because what the
-/// caller needs from it is the owner.
-async fn locked_alias_owner(
+/// caller needs from it is the owner — and the NAME says so too, for the same
+/// reason: `locked_alias_owner` outlived the lock it was named for, and a
+/// function whose name promises a lock it does not take is the same trap in the
+/// call site instead of in the comment.
+async fn alias_owner(
     tx: &mut Transaction<'_, MySql>,
     alias: &str,
 ) -> Result<Option<String>, Status> {
