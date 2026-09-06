@@ -129,6 +129,59 @@ async fn an_unregistered_path_is_tolerated_and_the_registered_ones_still_land() 
     assert_eq!(w.list("").await.len(), 1);
 }
 
+/// **A FLUSH SURVIVES A ROW THAT MOVED WHILE IT WAITED, and before this it did
+/// not.** `touch` counts and updates in one transaction, and a transaction gives
+/// ATOMICITY rather than one view of the table: a plain `SELECT` opens InnoDB's
+/// read view, and an `UPDATE` after it is a CURRENT read. Counting FIRST put the
+/// read view in front of the write, so a row another session committed in
+/// between made the `UPDATE` raise `ERROR 1020 Record has changed since last
+/// read` and the whole flush failed — reported to the caller as `INTERNAL
+/// "storage error"`, because 1020 is neither of the two numbers `sql::internal`
+/// treats as retryable.
+///
+/// **THE INTERLEAVING IS FORCED RATHER THAN RACED FOR.** A second transaction
+/// updates the row and does not commit, so its exclusive lock holds the flush at
+/// whichever statement wants to write. The commit lands while the flush is
+/// parked there — which is the window, deterministically, rather than one this
+/// test hopes to hit. The five hundred milliseconds are three orders of
+/// magnitude above the sub-millisecond `BEGIN` the flush has to get through
+/// first; they bound how long the test waits, not how narrow the window is.
+///
+/// **THE MUTATION**: move the count back above the update in `src/write.rs` and
+/// this test fails with `INTERNAL "storage error"`. It is not a fixture that
+/// certifies whatever the code does — under the old order the engine's own
+/// refusal reddens it.
+#[tokio::test]
+async fn a_flush_survives_a_row_another_writer_changed_while_it_waited() {
+    let w = world("project_db_touch_concurrent_change").await;
+    w.register(A).await;
+
+    // THE OTHER WRITER, holding the row. `EARLIER` is below `LATER`, so the
+    // flush's monotonic guard still matches the row once the lock is released —
+    // a value the guard rejected would test nothing.
+    let mut blocker = w.pool.begin().await.expect("begin");
+    sqlx::query("UPDATE project SET last_seen_at = FROM_UNIXTIME(?) WHERE path = ?")
+        .bind(EARLIER)
+        .bind(A)
+        .execute(&mut *blocker)
+        .await
+        .expect("hold the row");
+
+    let flush = w.touch(&[A], LATER);
+    let release = async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        blocker.commit().await.expect("release the row");
+    };
+    let (outcome, ()) = tokio::join!(flush, release);
+
+    outcome.expect("a row that moved while the flush waited is not a failed flush");
+    assert_eq!(
+        w.stored_last_seen_at(A).await,
+        Some(LATER),
+        "the flush that survived must also have landed"
+    );
+}
+
 #[tokio::test]
 async fn the_same_path_twice_in_one_flush_is_one_path() {
     let w = world("project_db_touch_duplicates").await;
