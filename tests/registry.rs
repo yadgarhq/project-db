@@ -146,14 +146,56 @@ async fn rename_and_archive_refuse_and_say_why() {
     assert_eq!(w.get(A).await.expect("get").path, A);
 }
 
+/// **THE NUMBERS ARE LITERALS AND NOT `MAX_DISPLAY_NAME_CHARS` (ADR-0573).**
+/// The bound is derived from an external artefact — the `VARCHAR(255)` in
+/// migration 1 — so a test spelling it as the implementation's own constant
+/// passes for whatever the constant happens to say, which is exactly how the
+/// byte bound this test now pins survived review. Move the constant to 254 or to
+/// 300 and the assertions below go red.
+///
+/// **THE MULTI-BYTE CASE IS THE ONE THAT PINS CHARACTERS RATHER THAN BYTES.**
+/// 255 × `U+1F600` is 255 characters and 1020 bytes: the column stores it —
+/// measured on `mariadb:11.8.9` — and a byte check refuses it. Every ASCII
+/// assertion here passes under both readings and proves nothing about which one
+/// the service uses.
 #[tokio::test]
 async fn a_display_name_wider_than_the_column_is_refused_rather_than_truncated() {
     let w = world("project_db_registry_display_name").await;
-    let err = w
-        .try_register(A, &"n".repeat(256))
+
+    // A NAME NO ASCII TEST DISTINGUISHES. `.len()` counts 1020 here and refuses;
+    // the column counts 255 and stores.
+    let wide = "\u{1F600}".repeat(255);
+    w.try_register(&format!("{ROOT}/wide-name"), &wide)
         .await
-        .expect_err("wider than the column");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        .expect("255 characters is what the column holds, whatever they cost in bytes");
+    assert_eq!(
+        w.get(&format!("{ROOT}/wide-name"))
+            .await
+            .expect("get")
+            .display_name,
+        wide,
+        "and it must have been STORED rather than merely not refused — under a permissive \
+         sql_mode the engine clips to 255 characters and reports success"
+    );
+
+    // ONE CHARACTER PAST THE COLUMN, in both alphabets. 256 × U+1F600 is
+    // ERROR 1406 on the engine, and so is 256 × 'n'.
+    for (what, name) in [
+        ("256 characters of ASCII", "n".repeat(256)),
+        ("256 characters of emoji", "\u{1F600}".repeat(256)),
+    ] {
+        let err = w
+            .try_register(&format!("{ROOT}/too-wide"), &name)
+            .await
+            .expect_err(what);
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{what}");
+    }
+
+    // AND THE ASCII BOUND ITSELF, so that widening the check cannot pass
+    // unnoticed either.
+    w.try_register(&format!("{ROOT}/at-the-bound"), &"n".repeat(255))
+        .await
+        .expect("255 characters of ASCII is the column's width, not one past it");
 
     // EMPTY IS LEGITIMATE, and refusing it would forbid an ordinary
     // registration whose name is its path.

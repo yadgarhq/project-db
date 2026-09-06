@@ -54,8 +54,50 @@ use crate::pb::yadgar::project::v1::*;
 use crate::service::ProjectDb;
 use crate::sql::{holes, internal, scope_of};
 
-/// The width of `project.display_name`.
-const MAX_DISPLAY_NAME: usize = 255;
+/// The width of `project.display_name`, IN CHARACTERS, because that is what
+/// stores it.
+///
+/// **CHARACTERS AND NOT BYTES.** The column is `display_name VARCHAR(255)` on
+/// `CHARSET=utf8mb4` (`crate::schema`, migration 1), and `VARCHAR(n)` in utf8mb4
+/// bounds CHARACTERS. This bound was checked with `String::len`, which counts
+/// BYTES, so the two disagreed by up to four to one. Measured on
+/// `mariadb:11.8.9` — the image this repository's README stands up — against the
+/// column exactly as the migration declares it, at the stock `sql_mode`
+/// (`STRICT_TRANS_TABLES,…`):
+///
+/// | display_name    | characters | bytes | outcome                                          |
+/// | --------------- | ---------- | ----- | ------------------------------------------------ |
+/// | 255 × `l`       | 255        | 255   | stored                                           |
+/// | 256 × `l`       | 256        | 256   | `ERROR 1406 Data too long for column 'display_name'` |
+/// | 255 × `U+1F600` | 255        | 1020  | stored                                           |
+/// | 256 × `U+1F600` | 256        | 1024  | `ERROR 1406 Data too long for column 'display_name'` |
+/// | 64 × `U+1F600`  | 64         | 256   | stored                                           |
+///
+/// So the byte check was wrong in ONE direction, and that is worth stating
+/// rather than leaving a reader to assume the symmetric case. A value passing a
+/// 255-BYTE test can never exceed 255 characters, so nothing the column refuses
+/// ever reached it — unlike `iam`'s `MAX_LABEL_BYTES`, which was also off by one
+/// and did admit a value the column refused. What it did was REFUSE: the last
+/// row of the table is a sixty-four-character name the column stores without
+/// complaint, turned away as "255 characters" by a message counting something
+/// else. A caller naming a project in Persian, Japanese or emoji met a limit a
+/// quarter of the one the schema declares.
+///
+/// **THE NUMBER IS THE COLUMN'S, AND THAT COUPLING IS DELIBERATE**, the same
+/// argument `iam`'s `MAX_LABEL_CHARS` makes: a `VARCHAR` width does not drift on
+/// its own, it is a declaration in a migration somebody edits. Refusing here
+/// makes the outcome this service's own and independent of a `sql_mode` it
+/// neither sets nor checks — under `sql_mode = ''` the same INSERT stores a
+/// CLIPPED 255-character name and reports success. If the column widens, this
+/// constant is what has to move with it.
+///
+/// **`path::MAX_LEN` IS LEFT COUNTING BYTES AND THAT IS NOT THE SAME DEFECT.**
+/// It guards the same utf8mb4 width, but `path::validate` admits only
+/// `[A-Za-z0-9._-]`, where a character is one byte — and its length check runs
+/// BEFORE the value is echoed into a refusal, which is a bound on how long a log
+/// line a caller can ask for. That one is a byte question and stays a byte
+/// check.
+const MAX_DISPLAY_NAME_CHARS: usize = 255;
 
 /// How many paths one `TouchProjects` may carry.
 ///
@@ -113,10 +155,16 @@ impl ProjectDb {
         // is the identity and it is already required. What is refused is a value
         // wider than the column, so that the failure is a sentence rather than a
         // truncation.
-        if req.display_name.len() > MAX_DISPLAY_NAME {
+        //
+        // COUNTED IN CHARACTERS, because the column is. `chars().count()` and
+        // not `len()`: a `char` is a Unicode scalar and maps one-to-one onto a
+        // utf8mb4 character, where graphemes would under-count. See
+        // [`MAX_DISPLAY_NAME_CHARS`].
+        let display_name_chars = req.display_name.chars().count();
+        if display_name_chars > MAX_DISPLAY_NAME_CHARS {
             return Err(Status::invalid_argument(format!(
-                "display_name is {} characters and the limit is {MAX_DISPLAY_NAME}",
-                req.display_name.len()
+                "display_name is {display_name_chars} characters and the limit is \
+                 {MAX_DISPLAY_NAME_CHARS}"
             )));
         }
 
