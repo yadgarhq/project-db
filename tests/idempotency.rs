@@ -165,11 +165,17 @@ async fn the_stored_fingerprint_is_the_digest_of_the_request_without_its_scope()
     );
 }
 
-/// **THE REFUSAL HAPPENS BEFORE THE KEY IS CLAIMED**, and that ordering is the
-/// point rather than an accident of where the check sits. A held-back verb that
-/// claimed first would SPEND the caller's key on an operation nobody performed —
-/// so the caller's next request under that key, whatever it asked for, would be
-/// refused as a differing payload.
+/// **A HELD-BACK VERB CLAIMS NOTHING**, because it opens no transaction at all
+/// — so the key it was handed is still free for whatever the caller asks next.
+/// Spend it and that next request, whatever it asked for, comes back refused as
+/// a differing payload.
+///
+/// **WHAT THIS DOES NOT PIN, and it used to claim it did.** It is not evidence
+/// that refusing BEFORE the claim is what saves the key. `register` refuses
+/// after its claim twice over and saves it just the same, by rolling the
+/// transaction back — see `a_failed_write_leaves_no_claim_behind` above, which
+/// is the assertion for that half. Both are transaction atomicity; only the
+/// second one needs it.
 #[tokio::test]
 async fn a_held_back_verb_does_not_spend_the_idempotency_key_it_was_given() {
     let w = world("project_db_idem_held_back").await;

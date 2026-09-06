@@ -24,10 +24,18 @@
 //! kind of ordering constraint. Both come back with the retag job, together.
 //!
 //! **THE REFUSAL IS THE FIRST THING EITHER HANDLER DOES**, before any
-//! transaction and before D9's claim. A refusal that had already claimed an
-//! idempotency key would spend that key on an operation nobody performed, so the
-//! caller's later retry of a DIFFERENT request under it would be refused as a
-//! differing payload.
+//! transaction — so neither ever ATTEMPTS a claim, and there is no D9 row to
+//! reason about. That is what makes an idempotency key offered to a held-back
+//! verb still free afterwards.
+//!
+//! It is not the ORDER that buys it, and this file used to say it was. The claim
+//! is written inside the caller's transaction (`src/idem.rs`), so a refusal
+//! BELOW it rolls the claim back with everything else and spends no key either —
+//! `register` refuses that way twice, twenty lines apart, and
+//! `tests/idempotency.rs::a_failed_write_leaves_no_claim_behind` is the proof.
+//! The invariant is guaranteed by transaction atomicity. Refusing early is a
+//! COST argument: a request that cannot succeed should not take a connection out
+//! of the pool to be told so.
 //!
 //! # `RegisterProject` has no caller in this release
 //!
@@ -138,11 +146,21 @@ impl ProjectDb {
     ) -> Result<RegisterProjectResponse, Status> {
         let scope = scope_of(&req.scope)?;
         path::validate("path", &req.path)?;
-        // THE RESERVED SEGMENT, REFUSED BEFORE THE TRANSACTION OPENS AND
-        // THEREFORE BEFORE D9'S CLAIM — the same ordering the two held-back
-        // verbs take, and for the same reason: a refusal that had already
-        // claimed an idempotency key would spend that key on an operation nobody
-        // performed. `local` is the root of the PRIVATE class of project ids, so
+        // THE RESERVED SEGMENT, REFUSED BEFORE THE TRANSACTION OPENS — and NOT
+        // because moving it below D9's claim would spend the caller's key. That
+        // is what this comment used to say, and the statement twenty lines below
+        // refutes it: the alias check refuses AFTER the claim, rolls the
+        // transaction back, and leaves the key free —
+        // `tests/idempotency.rs::a_failed_write_leaves_no_claim_behind` is the
+        // assertion, and `tests/registry.rs` says the same of this very guard,
+        // that moving it under the claim leaves that test green. The claim is
+        // written inside the caller's transaction (`src/idem.rs`), so what keeps
+        // an unperformed operation from spending a key is transaction ATOMICITY,
+        // at every refusal in this function.
+        //
+        // It sits here on a COST argument instead: a request that cannot succeed
+        // should not take a connection out of the pool and open a transaction to
+        // be told so. `local` is the root of the PRIVATE class of project ids, so
         // a project owning it becomes the nearest registered ancestor of every
         // private path in the estate and swallows all of them — see
         // `path::RESERVED_ROOT` for the whole of the argument. Registration is
