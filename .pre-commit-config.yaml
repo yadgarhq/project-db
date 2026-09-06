@@ -22,7 +22,7 @@ repos:
   # at first install and never re-resolves it, so a moving tag would silently
   # freeze each machine at whatever it meant the day it first ran.
   - repo: https://github.com/yadgarhq/actions
-    rev: v1.13.1
+    rev: v1.15.0
     hooks:
       - id: gitleaks
       - id: prettier
@@ -54,3 +54,16 @@ repos:
       - id: cargo-deny
       - id: observe-coverage
       - id: helm-lint
+      # ADR-0569'S GATE, AND THE REASON THIS REPOSITORY IS ONLY NOW RUNNING IT.
+      # The gate was a shell script copied byte-identically into five
+      # repositories — gateway, iam, iam-db, task and task-db — each declaring it
+      # `repo: local`. `project-db` never carried a copy, so it kept `fn env_or`
+      # and eleven compiled-in defaults while the rule was "enforced estate-wide"
+      # (ledger 626 closed on that claim; ledger 715 is it being false). Five
+      # copies checked the five repositories that already passed.
+      #
+      # `yadgarhq/actions` v1.15.0 publishes it (actions#59), and ADR-0577 says a
+      # published gate is closed only when every consumer references it — which is
+      # what this line is. The rev moves from v1.13.1 to v1.15.0 for the whole
+      # block because pre-commit resolves one rev per repository entry.
+      - id: no-compiled-in-defaults
