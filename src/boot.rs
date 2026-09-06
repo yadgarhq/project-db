@@ -36,6 +36,13 @@ use sqlx::mysql::MySqlConnectOptions;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use yadgar_store::credentials::Secret;
 use yadgar_store::pool::{parse_ssl_mode, PoolConfig, PoolError, DEFAULT_SSL_MODE};
+// THE ONE ERROR-CHAIN FLATTENER FOR THE ESTATE (ADR-0591). The body that used to
+// sit below `shutdown` in this file was one of five — `iam`, `iam-db`, `task`,
+// `task-db` and here — byte-identical apart from local names, under TWO names:
+// `chain` in the first two and `describe` in the other three. It is deleted
+// rather than left beside the shared one, because a consolidation that adds a
+// sixth copy without removing the five is worse than none.
+use yadgar_telemetry::diagnose::chain;
 
 /// The key selecting how TLS is negotiated to the engine.
 const SSL_MODE_KEY: &str = "DB_SSL_MODE";
@@ -248,7 +255,7 @@ pub fn server(tls: Option<&ServeTls>) -> Result<Server, BootError> {
         .map_err(|e| BootError::TlsUnusable {
             cert: tls.cert_file.clone(),
             key: tls.key_file.clone(),
-            detail: describe(&e),
+            detail: chain(&e),
         })
 }
 
@@ -274,22 +281,6 @@ pub fn server(tls: Option<&ServeTls>) -> Result<Server, BootError> {
 /// next rollout.
 pub fn shutdown() -> Result<impl std::future::Future<Output = ()>, BootError> {
     yadgar_lifecycle::shutdown().map_err(|source| BootError::SignalHandler { source })
-}
-
-/// Flatten an error and everything under it into one sentence.
-///
-/// `tonic::transport::Error` displays as "transport error" and keeps what
-/// actually went wrong in its source — so the message an operator needs is the
-/// CHAIN, not the head of it.
-fn describe(error: &dyn std::error::Error) -> String {
-    let mut out = error.to_string();
-    let mut source = error.source();
-    while let Some(next) = source {
-        out.push_str(": ");
-        out.push_str(&next.to_string());
-        source = next.source();
-    }
-    out
 }
 
 #[derive(Debug, thiserror::Error)]
