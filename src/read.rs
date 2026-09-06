@@ -60,8 +60,8 @@ impl ProjectDb {
         // ASCII CASE IS FOLDED HERE FOR THE SAME REASON THE REFUSAL ABOVE FOLDS
         // IT, and this comparison must stay THE SAME comparison as that one. The
         // walk is evaluated by the ENGINE, and `p.path IN (…)` compares under the
-        // column's collation — `utf8mb4_uca1400_ai_ci`, because `crate::schema`
-        // declares no `COLLATE` — so a chain still carrying `LOCAL` matches a row
+        // column's collation — `utf8mb4_general_ci`, which `crate::schema`
+        // declares in migration 4 — so a chain still carrying `LOCAL` matches a row
         // spelled `local`. A byte comparison here drops nothing from such a chain
         // and the squatted row is found anyway.
         //
@@ -130,8 +130,8 @@ impl ProjectDb {
         // ASCII CASE IS FOLDED HERE FOR THE THIRD TIME IN THIS RESOLUTION, AND
         // ALL THREE MUST STAY THE SAME COMPARISON — the reserved-segment refusal
         // above, the chain filter above, and this. `matched` is a value the
-        // ENGINE selected, under `utf8mb4_uca1400_ai_ci` (`crate::schema`
-        // declares no `COLLATE`), so the row it names may be spelled in a
+        // ENGINE selected, under `utf8mb4_general_ci` (`crate::schema`
+        // declares it in migration 4), so the row it names may be spelled in a
         // different ASCII case than the candidate that found it. A byte
         // comparison then answers `exact: false` about a row the engine matched
         // EXACTLY.
@@ -145,8 +145,8 @@ impl ProjectDb {
         // The fold is exactly as wide as the engine's and no wider: `validate`
         // admits only `[A-Za-z0-9._-]`, and within that alphabet ASCII case is
         // the whole of what this collation folds (measured — `-`, `.` and `_`
-        // each compare equal to nothing but themselves). So no `COLLATE`
-        // migration is needed to make this line true.
+        // each compare equal to nothing but themselves), and migration 4 is what
+        // makes that collation the schema's rather than the server's.
         let exact = matched.eq_ignore_ascii_case(&req.candidate_path);
         Ok(ResolveProjectResponse {
             resolved_path: resolved.clone(),

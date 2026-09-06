@@ -21,6 +21,7 @@ fn all() -> Vec<Migration> {
         create_project(),
         project_alias(),
         project_write_idempotency(),
+        pin_the_path_collation(),
     ]
 }
 
@@ -161,6 +162,109 @@ fn project_write_idempotency() -> Migration {
                   created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   PRIMARY KEY (project_id, user_id, idem_key)
               ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+            .into(),
+    }
+}
+
+/// **THE TWO PATH COLUMNS DECIDE WHETHER A PROJECT PATH IS CASE-SENSITIVE, AND
+/// UNTIL NOW NOTHING IN THIS REPOSITORY SAID SO.** Migrations 1 and 2 declare
+/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE`, so `project.path` and
+/// `project_alias.alias_path` take whatever `@@collation_server` happens to be.
+/// This migration writes the answer down.
+///
+/// **THE CODE HAS AN OPINION AND THE COLUMN DID NOT.** Two call sites fold ASCII
+/// case in Rust because they believe the engine does: `path::refuse_reserved_root`,
+/// so `LOCAL` cannot occupy the slot reserved for `local`, and
+/// `write::deduplicated`, so two spellings of one path are not counted as two
+/// paths resolving to one row. Both are right today and neither is guaranteed.
+/// Measured on `mariadb:11.8.9` against the tables exactly as migrations 1 and 2
+/// declare them, `information_schema.COLUMNS` reports `utf8mb4_uca1400_ai_ci`
+/// for both columns — case-insensitive, because that is this image's server
+/// default. An operator whose engine defaults to `utf8mb4_bin` or to a `_cs`
+/// collation gets a store in which `alpha` and `ALPHA` are two rows; then
+/// `deduplicated` folds them into one path, touches one row, reports that
+/// everything it named resolved, and silently never advances the other project's
+/// `last_seen_at`. Nothing anywhere reports that. It is D80's second failure mode
+/// exactly: a behaviour whose correctness rests on an environment default nobody
+/// declared.
+///
+/// **`utf8mb4_general_ci` RATHER THAN THE NAME THE COLUMN CARRIES TODAY, and
+/// rather than `utf8mb4_bin`.** Within the alphabet `path::validate` admits —
+/// `[A-Za-z0-9._-]` — the choice among case-insensitive collations is
+/// portability and not semantics, and that is measured rather than assumed. On
+/// `mariadb:11.8.9`, for `utf8mb4_uca1400_ai_ci`, `utf8mb4_general_ci` and
+/// `utf8mb4_unicode_ci` alike: `alpha` = `ALPHA` and `local` = `LOCAL` hold,
+/// while `lo-cal`, `l.ocal` and `lo_cal` are each UNEQUAL to `local` and to each
+/// other. ASCII case is the whole of what any of them folds here. So this pins
+/// the behaviour the code already assumes, and it pins it under a name every
+/// engine knows: `utf8mb4_uca1400_ai_ci` exists only on MariaDB 11.4 and later,
+/// so naming it would fail this migration on any older engine for a difference no
+/// path can express.
+///
+/// **`utf8mb4_bin` IS THE OTHER COHERENT ANSWER AND IT IS NOT THIS ONE.** It
+/// would make paths case-SENSITIVE, which inverts both decisions above:
+/// `refuse_reserved_root` would be turning away `LOCAL`, a name the store would
+/// then hold happily as an ordinary organisation, and `deduplicated` would have
+/// to stop folding or lose a project's flush. That is a decision about what a
+/// project path IS, it reaches every `Meta.project_id` in the estate, and it
+/// belongs in the record rather than in a migration. Pinned first, argued
+/// separately: whichever way that goes, it should not also be the moment the
+/// column stops depending on a server setting.
+///
+/// **WHAT IT COSTS.** A collation change on an indexed column is a table
+/// rebuild: MariaDB copies `project` and `project_alias` and rebuilds
+/// `uq_project_path` and the alias primary key under a metadata lock, so writes
+/// to those two tables wait for the duration. Measured on `mariadb:11.8.9`
+/// against populated copies of both tables — four projects, two aliases, mixed
+/// case — both statements succeed and every row survives with its bytes intact:
+/// `acme/Forecast-2` and `ACME/Older` come back spelled as they went in.
+///
+/// **IT CAN FAIL, IN EXACTLY ONE CASE, AND THAT FAILURE IS THE CORRECT ONE.**
+/// From any case-INSENSITIVE starting collation it cannot: `general_ci` and
+/// `uca1400_ai_ci` agree over the whole admitted alphabet, so no two rows
+/// distinct before are equal after. From `utf8mb4_bin` it can, and measured it
+/// does — with `acme/forecast` and `ACME/FORECAST` both present, the `ALTER`
+/// answers `ERROR 1062 Duplicate entry for key 'uq_project_path'`. A store in
+/// that state is already holding the split-corpus condition this module exists
+/// to prevent, and every case-folding call site has been reading it wrongly for
+/// as long as it has existed. Refusing loudly is better than pinning a collation
+/// over it. An operator meeting 1062 has two rows to reconcile before this
+/// applies, and the message names the index that says which.
+///
+/// Today none of that arises: this module has no tag, no `yadgar-deployable`
+/// topic and no `argocd/versions` entry, so there is no populated column
+/// anywhere to rebuild.
+///
+/// **THE TWO PATH COLUMNS MOVE TOGETHER AND NOTHING ELSE MOVES WITH THEM.**
+/// `project.display_name` and `project_write.project_id` keep the server
+/// default, so this table now carries mixed collations on purpose. The rule is
+/// that a column moves when something COMPARES it against another path — `path`
+/// and `alias_path` are joined in `read.rs` and in `touch`'s `matches`, and a
+/// mismatch between two compared columns is `ERROR 1267 Illegal mix of
+/// collations`. Nothing compares `display_name` or `project_id` to either, so
+/// neither is pinned here; a later column that IS compared to a path belongs in
+/// this migration's company rather than on the default.
+///
+/// **APPENDED RATHER THAN EDITED INTO MIGRATION 1**, which is this file's
+/// standing rule. The rule's usual reason — that migration 1 has already run
+/// somewhere — happens to be false for this module today, and following it
+/// anyway is what keeps a developer's existing database and a fresh one the same
+/// schema.
+///
+/// The two statements are one migration because they are one decision. DDL is
+/// not transactional on this engine, so a failure between them leaves the ledger
+/// row unwritten and the next boot re-runs both — and re-applying a collation a
+/// column already carries is a no-op.
+fn pin_the_path_collation() -> Migration {
+    Migration {
+        version: 4,
+        name: "pin_the_path_collation".into(),
+        sql: "ALTER TABLE project
+                MODIFY path VARCHAR(255)
+                  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL;
+              ALTER TABLE project_alias
+                MODIFY alias_path VARCHAR(255)
+                  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL"
             .into(),
     }
 }

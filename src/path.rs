@@ -92,10 +92,12 @@ pub const RESERVED_ROOT: &str = "local";
 /// characters.
 ///
 /// **THE EQUALITY IS ASCII-CASE-INSENSITIVE, AND THE STORE IS WHAT DECIDES
-/// THAT.** `project.path` and `project_alias.alias_path` are declared
-/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE` (`crate::schema`, migration 1),
-/// so they take the server default — measured `utf8mb4_uca1400_ai_ci` on
-/// MariaDB 11.8, which is case- AND accent-insensitive. `uq_project_path`
+/// THAT.** `project.path` and `project_alias.alias_path` collate
+/// `utf8mb4_general_ci` (`crate::schema`, migration 4), which is case- AND
+/// accent-insensitive. That is DECLARED rather than inherited: migrations 1 and
+/// 2 named no `COLLATE`, so until migration 4 the columns took
+/// `@@collation_server` and this guard rested on a setting no deployment
+/// states. `uq_project_path`
 /// therefore holds ONE slot for every ASCII-case spelling of the segment, so a
 /// byte-exact comparison here lets `LOCAL` pass the guard, reach the INSERT and
 /// occupy the reserved slot — permanently, because the retirement the paragraph
@@ -288,9 +290,8 @@ mod tests {
     }
 
     /// **A BYTE-EXACT REFUSAL LEAVES THE DOOR OPEN ONE SHIFT KEY AWAY.**
-    /// `project.path` is declared `DEFAULT CHARSET=utf8mb4` with NO `COLLATE`
-    /// (`crate::schema`, migration 1), so it takes the server default — measured
-    /// `utf8mb4_uca1400_ai_ci` on MariaDB 11.8, which is case-insensitive. So
+    /// `project.path` collates `utf8mb4_general_ci` (`crate::schema`,
+    /// migration 4), which is case-insensitive. So
     /// `uq_project_path` holds ONE slot for every ASCII-case spelling of the
     /// segment, and a registration at `LOCAL` occupies the reserved slot for
     /// ever: `crate::write` holds both `RenameProject` and `ArchiveProject` at
@@ -320,7 +321,7 @@ mod tests {
 
     /// **THE GUARD IS COMPLETE ONLY BECAUSE THIS ALPHABET IS ASCII-ONLY, AND
     /// THIS TEST IS WHAT KEEPS THAT TRUE.** `project.path` collates
-    /// `utf8mb4_uca1400_ai_ci` — case-insensitive AND accent-insensitive — so
+    /// `utf8mb4_general_ci` — case-insensitive AND accent-insensitive — so
     /// any two spellings that collate equal share one `uq_project_path` slot.
     /// [`refuse_reserved_root`] answers only the CASE half of that, with
     /// `eq_ignore_ascii_case`. The accent half needs no answer, and the reason is

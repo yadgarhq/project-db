@@ -63,6 +63,59 @@ async fn one_path_is_one_project() {
     assert_eq!(err.code(), tonic::Code::AlreadyExists);
 }
 
+/// **THE COLLATION IS PINNED IN THE SCHEMA, so this is a property of the store
+/// rather than of whichever engine an operator started.** `src/path.rs` and
+/// `src/write.rs` both fold ASCII case in Rust on the stated ground that the
+/// engine folds it. Before migration 4 that ground was `@@collation_server`,
+/// which no deployment declares: on an engine defaulting to `utf8mb4_bin` the
+/// two spellings below are two rows, and `write::deduplicated` then folds them
+/// into one path, advances one project's `last_seen_at`, and reports that
+/// everything it named resolved.
+///
+/// The assertion is on the INDEX rather than on a Rust comparison, because the
+/// index is the thing the Rust comparison is claiming to agree with.
+#[tokio::test]
+async fn two_ascii_case_spellings_of_one_path_are_one_row_in_the_store() {
+    let w = world("project_db_registry_case_folds").await;
+    w.register(A).await;
+
+    let err = w
+        .try_register(&A.to_ascii_uppercase(), "the same path, shouted")
+        .await
+        .expect_err("uq_project_path holds one slot for every ASCII-case spelling");
+    assert_eq!(err.code(), tonic::Code::AlreadyExists);
+    assert_eq!(w.list("").await.len(), 1);
+}
+
+/// **AND THE COLLATION ITSELF, READ OUT OF THE CATALOGUE.** The behavioural test
+/// above says the columns fold case; this says WHICH declaration makes them, so
+/// that a store inheriting a case-insensitive server default cannot pass for one
+/// that declared it. The literal is spelled here rather than imported from
+/// `src/schema.rs` (ADR-0573): a test naming the migration's own constant agrees
+/// with the migration whatever it says.
+#[tokio::test]
+async fn both_path_columns_declare_their_collation_rather_than_inheriting_one() {
+    let w = world("project_db_registry_collation").await;
+
+    for (table, column) in [("project", "path"), ("project_alias", "alias_path")] {
+        let collation: String = sqlx::query_scalar(
+            "SELECT COLLATION_NAME FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&w.pool)
+        .await
+        .expect("read the catalogue");
+
+        assert_eq!(
+            collation, "utf8mb4_general_ci",
+            "{table}.{column} must carry the collation the schema declares, not the one \
+             @@collation_server happened to hand it"
+        );
+    }
+}
+
 /// **THE NAMESPACE RULE NO SINGLE CONSTRAINT CAN STATE.** An alias and a live
 /// path are two tables, so a unique index cannot span them.
 #[tokio::test]
