@@ -340,9 +340,11 @@ impl ProjectDb {
 /// rather than two lines at the call site is WHICH values count as the same one.
 ///
 /// **THE COMPARISON IS ASCII-CASE-INSENSITIVE BECAUSE THE ENGINE'S IS.**
-/// `project.path` and `project_alias.alias_path` are declared `utf8mb4` with no
-/// `COLLATE` (`crate::schema`), so they take `utf8mb4_uca1400_ai_ci` — measured
-/// on MariaDB 11.8 — and `path IN (…)` folds ASCII case. A byte-wise dedup
+/// `project.path` and `project_alias.alias_path` collate `utf8mb4_general_ci`
+/// (`crate::schema`, migration 4), so `path IN (…)` folds ASCII case. Migration
+/// 4 is what makes that a property of the SCHEMA: before it the columns took
+/// `@@collation_server`, and an engine defaulting to `utf8mb4_bin` would have
+/// made this function's folding wider than the store's. A byte-wise dedup
 /// therefore counts `alpha` and `ALPHA` as two while `COUNT(*)` finds the one
 /// row they both name, and the caller of this function compares those two
 /// numbers: the flush would report that it "named paths that resolve to no
@@ -351,7 +353,7 @@ impl ProjectDb {
 /// reads. Case is the WHOLE of what the collation folds within the path grammar
 /// `validate` admits — `[A-Za-z0-9._-]`, where `-`, `.` and `_` are each
 /// measured UNEQUAL to nothing but themselves — so folding ASCII case is exactly
-/// as wide as the engine, and no `COLLATE` migration is required to make it so.
+/// as wide as the engine.
 ///
 /// **WHICH SPELLING SURVIVES IS IMMATERIAL, and that is worth saying rather than
 /// leaving to be re-derived.** The survivor is bound into a predicate the engine
@@ -532,7 +534,7 @@ mod tests {
 
     /// **THE FIXTURE A CASE-INSENSITIVE COMPARISON THAT WENT TOO FAR WOULD
     /// FAIL.** `-`, `.` and `_` are each measured UNEQUAL to anything but
-    /// themselves under `utf8mb4_uca1400_ai_ci`, and two sibling projects are
+    /// themselves under `utf8mb4_general_ci`, and two sibling projects are
     /// two rows. Collapsing them would silently drop one project's flush.
     #[test]
     fn paths_that_differ_by_more_than_case_stay_separate() {

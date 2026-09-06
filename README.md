@@ -195,9 +195,10 @@ reservation exists to carry, and the check is equality on the segment rather tha
 a prefix match, so `locals` is an ordinary organisation.
 
 That equality folds ASCII case, and the STORE is what decides it. `project.path`
-and `project_alias.alias_path` are declared `DEFAULT CHARSET=utf8mb4` with no
-`COLLATE`, so they take the server default — `utf8mb4_uca1400_ai_ci`, measured on
-MariaDB 11.8, which is case- and accent-insensitive. `uq_project_path` therefore
+and `project_alias.alias_path` collate `utf8mb4_general_ci`, which is case- and
+accent-insensitive, and migration 4 DECLARES it: migrations 1 and 2 named no
+`COLLATE`, so until then the columns took whatever `@@collation_server` was and
+this guard rested on a setting no deployment states. `uq_project_path` therefore
 holds one slot for every ASCII-case spelling, so a byte-exact refusal would let
 `LOCAL` pass the guard and occupy the reserved slot for ever. ASCII case is the
 whole of what the collation folds here, and that is a property of the GRAMMAR
@@ -244,8 +245,9 @@ cries wolf is one nobody reads.
 
 Folding ASCII case is exactly as wide as the engine and no wider, for the reason
 the section above gives: within the grammar `validate` admits, ASCII case is the
-whole of what this collation folds. No `COLLATE` migration is needed to make
-either line true, and neither fix creates, deletes or rewrites a row.
+whole of what this collation folds. Migration 4 is what makes the engine's half of
+that a declaration rather than a server setting; neither Rust-side fix creates,
+deletes or rewrites a row.
 
 ## The Service is headless, deliberately
 
