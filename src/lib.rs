@@ -66,6 +66,16 @@ pub mod pb {
         }
         pub mod project {
             pub mod v1 {
+                // `yadgarhq/project` met this lint first (`project/src/lib.rs:58`):
+                // prost carries `project.proto`'s comment above `service
+                // ProjectService` through verbatim, and its bullet list has flush
+                // continuation lines. Scoped to this generated module only, so a
+                // hand-written lazy continuation elsewhere still fails the build.
+                // The fix that removes it belongs in `yadgarhq/proto` — indent the
+                // continuation lines — not here (D16: no hand-editing generated
+                // output).
+                #![allow(clippy::doc_lazy_continuation)]
+
                 tonic::include_proto!("yadgar.project.v1");
             }
         }
