@@ -57,6 +57,13 @@ mod write;
 /// cross-package references are emitted as `super::super::common::v1::Meta`, so
 /// a flattened tree fails to compile with an error that points at generated code
 /// rather than at this file.
+///
+/// `doc_lazy_continuation` is allowed here rather than fixed at the source: the
+/// doc comments below are carried in verbatim from `proto/`'s own `.proto`
+/// comments by `tonic-prost-build`, so this crate does not author the markdown
+/// tripping the lint and cannot reindent it without hand-editing generated code
+/// (D16 forbids that).
+#[allow(clippy::doc_lazy_continuation)]
 pub mod pb {
     pub mod yadgar {
         pub mod common {
