@@ -10,7 +10,7 @@ description = "The project module's -db twin: the registry of projects, serving 
 # Pinned by RELEASE TAG, not by branch — a published tag never moves in this
 # organisation, so `v0.2.0` names exactly one commit for as long as it exists
 # (the same reasoning that pins images by digest (D61) and actions by SHA (D62)).
-yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.2.5" }
+yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.2.6" }
 # In tonic 0.14 prost codegen moved out to tonic-prost; there is no "prost"
 # feature on tonic itself.
 tonic = { version = "0.14", default-features = false, features = [
@@ -35,7 +35,7 @@ prost-types = "0.14"
 # crate. `v0.1.2` is `v0.1.1` with its own vendored proto pin moved to v1.10.2 —
 # a provable no-op, taken because a new repository pinning a stale tag is a
 # choice that would need a reason and has none.
-yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.1.9", features = ["grpc"] }
+yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.1.10", features = ["grpc"] }
 # WHICH SIGNALS END THIS PROCESS, and the ADR-0523 rotation watcher, decided once
 # for the estate rather than once per repository (ADR-0526's pin, D19's rule).
 #
@@ -47,7 +47,7 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # about. Taking the watcher without `drain_within` is the bug rather than half
 # the fix — tokio never unregisters a libc signal handler, so once the rotation
 # arm wins the `select!` a later SIGTERM is swallowed and only SIGKILL remains.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.9" }
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.10" }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
