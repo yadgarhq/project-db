@@ -57,13 +57,6 @@ mod write;
 /// cross-package references are emitted as `super::super::common::v1::Meta`, so
 /// a flattened tree fails to compile with an error that points at generated code
 /// rather than at this file.
-///
-/// `doc_lazy_continuation` is allowed here rather than fixed at the source: the
-/// doc comments below are carried in verbatim from `proto/`'s own `.proto`
-/// comments by `tonic-prost-build`, so this crate does not author the markdown
-/// tripping the lint and cannot reindent it without hand-editing generated code
-/// (D16 forbids that).
-#[allow(clippy::doc_lazy_continuation)]
 pub mod pb {
     pub mod yadgar {
         pub mod common {
@@ -73,6 +66,16 @@ pub mod pb {
         }
         pub mod project {
             pub mod v1 {
+                // `yadgarhq/project` met this lint first (`project/src/lib.rs:58`):
+                // prost carries `project.proto`'s comment above `service
+                // ProjectService` through verbatim, and its bullet list has flush
+                // continuation lines. Scoped to this generated module only, so a
+                // hand-written lazy continuation elsewhere still fails the build.
+                // The fix that removes it belongs in `yadgarhq/proto` — indent the
+                // continuation lines — not here (D16: no hand-editing generated
+                // output).
+                #![allow(clippy::doc_lazy_continuation)]
+
                 tonic::include_proto!("yadgar.project.v1");
             }
         }
