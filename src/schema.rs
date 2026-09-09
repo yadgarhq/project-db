@@ -175,7 +175,7 @@ fn project_write_idempotency() -> Migration {
 /// **THE CODE HAS AN OPINION AND THE COLUMN DID NOT.** Two call sites fold ASCII
 /// case in Rust because they believe the engine does: `path::refuse_reserved_root`,
 /// so `LOCAL` cannot occupy the slot reserved for `local`, and
-/// `write::deduplicated`, so two spellings of one path are not counted as two
+/// `write::touch::deduplicated`, so two spellings of one path are not counted as two
 /// paths resolving to one row. Both are right today and neither is guaranteed.
 /// Measured on `mariadb:11.8.9` against the tables exactly as migrations 1 and 2
 /// declare them, `information_schema.COLUMNS` reports `utf8mb4_uca1400_ai_ci`
