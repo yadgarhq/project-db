@@ -22,7 +22,7 @@ repos:
   # at first install and never re-resolves it, so a moving tag would silently
   # freeze each machine at whatever it meant the day it first ran.
   - repo: https://github.com/yadgarhq/actions
-    rev: v1.18.2
+    rev: v1.18.3
     hooks:
       - id: gitleaks
       - id: prettier
@@ -84,5 +84,17 @@ repos:
       # list, which is how a ceiling stops meaning anything (`complexity.py` says
       # so in as many words). The refactor came first; these two lines are what
       # make it hold.
+      #
+      # THE REV MOVES FROM v1.18.2 TO v1.18.3 FOR THIS ID, and the whole block
+      # comes with it because pre-commit resolves one rev per repository entry.
+      # v1.18.2's `complexity.py` PREDATES actions#69: it has no
+      # `TEST_FILE_NAMES`, no `TEST_ATTR` and no `_is_test_fn`, and exempts a
+      # test DIRECTORY only — so it measures the newly-created
+      # `src/boot/tests.rs` as production code. That file passes at 419 lines
+      # today, which is the trap rather than the reassurance: the next unit test
+      # added to it counts against a PRODUCTION ceiling, and the refusal would
+      # name a line count nobody could act on. `git diff --stat v1.18.2 v1.18.3`
+      # is `hooks/complexity.py` and its test file and nothing else, so no other
+      # hook in this block changes behaviour.
       - id: complexity
       - id: cargo-clippy-complexity
