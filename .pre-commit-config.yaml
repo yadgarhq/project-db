@@ -70,6 +70,13 @@ repos:
       # LEDGER 734, adopting ledger 726's gate: a file read at boot is marked
       # ADR-0523-WATCHED naming a src/rotate.rs material, or ADR-0523-UNWATCHED
       # with a reason. This repository had never run it before this PR.
+      # LEDGER 658. A mechanical ceiling on the size of a `run:` block. Adopted
+      # for CLASS UNIFORMITY rather than for a violation here: measured
+      # 2026-09-09 this repository's workflows hold no block scalar at all,
+      # exactly like the nine other consumers that already carry the id. A
+      # consumer's workflow is a caller. The gate arms the day someone writes
+      # the first real block, which is the point of listing it before then.
+      - id: run-block-size
       - id: boot-reads-watched
       # LEDGER 719. Two ceilings, and they measure different things. `complexity`
       # is the line count — 500 per file, 120 per function — which catches a flat
