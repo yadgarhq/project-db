@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // without touching the engine. D69 puts the refusals first, and this one is
     // cheaper than the probe.
     let tls = boot::ServeTls::from_env(boot::LISTEN).map_err(|e| e.to_string())?;
-    let mut server = boot::server(tls.as_ref()).map_err(|e| e.to_string())?;
+    let server = boot::server(tls.as_ref()).map_err(|e| e.to_string())?;
 
     // The credential never arrives as an environment variable — it is a mounted
     // Secret the operator issued (D58), read through the seam so this module has
@@ -161,6 +161,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(applied, "schema at migration {applied}");
 
     // 3. SERVE. Only now.
+    serve(server, pool, tls, tls_inputs, schedule).await
+}
+
+/// The third phase, lifted out of `main` whole.
+///
+/// The boundary is the one the boot sequence already numbers — probe, migrate,
+/// then serve — rather than a line drawn to satisfy a count. What arrives here
+/// is what the first two phases produced and nothing else: the configured
+/// listener, a pool the migration has already brought up to this binary's
+/// schema, and the rotation watch set built at the moment its last member was
+/// read.
+///
+/// `LISTEN` and `METRICS_LISTEN` are read HERE and from `std::env` alone, which
+/// is where they were read before (ADR-0569). Moving the read did not give
+/// either knob a second source or a fallback.
+async fn serve(
+    mut server: tonic::transport::Server,
+    pool: sqlx::MySqlPool,
+    tls: Option<boot::ServeTls>,
+    tls_inputs: rotate::Inputs,
+    schedule: rotate::Schedule,
+) -> Result<(), Box<dyn std::error::Error>> {
     // The BINARY installs the exporter, never the library — a library that
     // installs one picks the backend for every service linking it. A failure here
     // is logged and ignored: a service that cannot export metrics should still
