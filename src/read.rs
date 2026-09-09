@@ -76,36 +76,7 @@ impl ProjectDb {
             .into_iter()
             .filter(|ancestor| !ancestor.eq_ignore_ascii_case(path::RESERVED_ROOT))
             .collect();
-        let holes = holes(chain.len());
-
-        // ONE ROUND TRIP FOR THE WHOLE WALK. A loop that queries per level costs
-        // a round trip per path segment on the hottest rpc in the estate, and
-        // its levels are not independent — a concurrent rename between two of
-        // them would let the walk step over a live parent. One statement sees
-        // one snapshot.
-        //
-        // `matched` is what was found, `resolved` is the live path it names, and
-        // the two differ exactly when an alias was followed.
-        //
-        // AUDIT: the interpolations are this module's own column list and a
-        // count of `?` placeholders; every caller value is a bound parameter.
-        let sql = format!(
-            "SELECT p.path AS matched, p.path AS resolved, p.status AS status,
-                    CAST(0 AS SIGNED) AS via_alias
-               FROM project p
-              WHERE p.path IN ({holes})
-              UNION ALL
-             SELECT a.alias_path AS matched, p.path AS resolved, p.status AS status,
-                    CAST(1 AS SIGNED) AS via_alias
-               FROM project_alias a
-               JOIN project p ON p.id = a.project_id
-              WHERE a.alias_path IN ({holes})"
-        );
-        let mut query = sqlx::query_as::<_, (String, String, i8, i64)>(sqlx::AssertSqlSafe(sql));
-        for candidate in chain.iter().chain(chain.iter()) {
-            query = query.bind(*candidate);
-        }
-        let found = query.fetch_all(&self.pool).await.map_err(internal)?;
+        let found = ancestor_rows(&self.pool, &chain).await?;
 
         // THE DEEPEST MATCH WINS, and the ancestor chain is a chain of strict
         // prefixes, so the longest `matched` IS the deepest. A live path beats
@@ -330,6 +301,49 @@ impl ProjectDb {
         }
         Ok(projects)
     }
+}
+
+/// The two-arm walk, in one round trip, as the statement and its binds.
+///
+/// ONE ROUND TRIP FOR THE WHOLE WALK. A loop that queries per level costs
+/// a round trip per path segment on the hottest rpc in the estate, and
+/// its levels are not independent — a concurrent rename between two of
+/// them would let the walk step over a live parent. One statement sees
+/// one snapshot.
+///
+/// `matched` is what was found, `resolved` is the live path it names, and
+/// the two differ exactly when an alias was followed.
+///
+/// AUDIT: the interpolations are this module's own column list and a
+/// count of `?` placeholders; every caller value is a bound parameter.
+///
+/// LIFTED OUT OF `resolve` WHOLE, so the AUDIT note above covers a body that
+/// is nothing but the statement and the values bound into it. The three ASCII
+/// case-folds this resolution must keep identical are NOT split by it: the
+/// chain filter and the `exact` check are both still in `resolve`, and the
+/// third is `path::refuse_reserved_root`.
+async fn ancestor_rows(
+    pool: &sqlx::MySqlPool,
+    chain: &[&str],
+) -> Result<Vec<(String, String, i8, i64)>, Status> {
+    let holes = holes(chain.len());
+    let sql = format!(
+        "SELECT p.path AS matched, p.path AS resolved, p.status AS status,
+                CAST(0 AS SIGNED) AS via_alias
+           FROM project p
+          WHERE p.path IN ({holes})
+          UNION ALL
+         SELECT a.alias_path AS matched, p.path AS resolved, p.status AS status,
+                CAST(1 AS SIGNED) AS via_alias
+           FROM project_alias a
+           JOIN project p ON p.id = a.project_id
+          WHERE a.alias_path IN ({holes})"
+    );
+    let mut query = sqlx::query_as::<_, (String, String, i8, i64)>(sqlx::AssertSqlSafe(sql));
+    for candidate in chain.iter().chain(chain.iter()) {
+        query = query.bind(*candidate);
+    }
+    query.fetch_all(pool).await.map_err(internal)
 }
 
 /// A page size the caller did not set is 0, which would return nothing and look
