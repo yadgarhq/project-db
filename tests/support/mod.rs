@@ -19,7 +19,7 @@
 
 use sqlx::{Connection, MySqlPool, Row};
 use tonic::{Request, Status};
-use yadgar_project_db::pb::yadgar::common::v1::{Idempotency, Scope};
+use yadgar_project_db::pb::yadgar::common::v1::{Idempotency, Scope, Visibility};
 use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
 use yadgar_project_db::pb::yadgar::project::v1::*;
 use yadgar_project_db::{schema, service::ProjectDb};
@@ -329,19 +329,71 @@ impl World {
             "project.id is VARCHAR(96) and this fixture id is {} characters: {id}",
             id.len()
         );
+        let (source_repo, owner_user_id, visibility) = class_of(path, created_by);
         sqlx::query(
             "INSERT INTO project
-               (id, version, path, display_name, status, created_by, updated_by)
-             VALUES (?, 1, ?, '', ?, ?, ?)",
+               (id, version, path, display_name, status, source_repo, owner_user_id, visibility,
+                created_by, updated_by)
+             VALUES (?, 1, ?, '', ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(path)
         .bind(ProjectStatus::Active as i8)
+        .bind(source_repo)
+        .bind(owner_user_id)
+        .bind(visibility)
         .bind(created_by)
         .bind(created_by)
         .execute(&self.pool)
         .await
         .expect("seed project");
+    }
+
+    /// Write a project row with the class columns stated EXPLICITLY, and answer
+    /// with what the engine said.
+    ///
+    /// **THIS IS THE VECTOR FOR THE CHECK TESTS, and it exists because driving
+    /// `RegisterProject` cannot prove them.** `write::register` derives the class
+    /// columns from the path and so can never construct a disagreeing row; a test
+    /// built on it would stay green with both CHECKs dropped, because the Rust
+    /// code refuses first and the assertion cannot tell which layer did. This
+    /// writes straight to the table on the pool, so the only thing left to refuse
+    /// is the engine.
+    ///
+    /// It returns the `sqlx::Error` rather than a `Status` deliberately: the
+    /// CONSTRAINT NAME is what the caller asserts on, and `sql::internal` maps
+    /// every database error to one `Status::internal` whose message names nothing.
+    pub async fn insert_class_row(
+        &self,
+        path: &str,
+        source_repo: Option<&str>,
+        owner_user_id: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let id = format!("yadgar:project:class:{path}");
+        assert!(
+            id.len() <= 96,
+            "project.id is VARCHAR(96) and this fixture id is {} characters: {id}",
+            id.len()
+        );
+        sqlx::query(
+            "INSERT INTO project
+               (id, version, path, display_name, status, source_repo, owner_user_id, visibility,
+                created_by, updated_by)
+             VALUES (?, 1, ?, '', ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(path)
+        .bind(ProjectStatus::Active as i8)
+        .bind(source_repo)
+        .bind(owner_user_id)
+        // STATED, never defaulted. The column is NOT NULL with no DEFAULT, and
+        // this fixture is not what any visibility assertion is about.
+        .bind(Visibility::Org as i8)
+        .bind(U1)
+        .bind(U1)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
     }
 
     /// Give a project a former path, written straight into the table.
@@ -399,6 +451,23 @@ impl World {
 
     pub async fn stored_version(&self, path: &str) -> u64 {
         self.column(path, "version").await
+    }
+
+    /// `(source_repo, owner_user_id)` as the row holds them.
+    ///
+    /// Read as a PAIR rather than one at a time, because the fact under test is
+    /// their exclusivity: asserting them separately lets a row with both set
+    /// satisfy two assertions that each look correct.
+    pub async fn stored_class(&self, path: &str) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT source_repo, owner_user_id FROM project WHERE path = ?")
+            .bind(path)
+            .fetch_one(&self.pool)
+            .await
+            .expect("read the class columns")
+    }
+
+    pub async fn stored_visibility(&self, path: &str) -> i8 {
+        self.column(path, "visibility").await
     }
 
     /// The `updated_at` of a registration, as an epoch second.
@@ -488,5 +557,29 @@ impl World {
             .fetch_one(&self.pool)
             .await
             .expect("count")
+    }
+}
+
+/// The class columns a fixture row carries, derived from its PATH.
+///
+/// **THE SAME RULE `write::register` APPLIES, and stated here rather than
+/// imported so the fixture cannot borrow a defect from the code under test.**
+/// The rule is one line of the plan: the class is the path, and a private path is
+/// `local/<account>/<path>` by construction of the id (ADR-0605). What the
+/// fixture must not do is decide a class the CHECKs would refuse — a fixture that
+/// tripped a constraint in every unrelated test would say nothing about either.
+///
+/// The BARE reserved segment is org-class here, and that is not an oversight:
+/// `local` does not match `local/%`, so the engine's own rule puts it on the org
+/// side, and `tests/registry.rs` seeds exactly that row to present a store
+/// holding one.
+fn class_of(path: &str, actor: &str) -> (Option<String>, Option<String>, i8) {
+    let private = path
+        .split_once('/')
+        .is_some_and(|(root, _)| root.eq_ignore_ascii_case("local"));
+    if private {
+        (None, Some(actor.to_string()), Visibility::Private as i8)
+    } else {
+        (Some(path.to_string()), None, Visibility::Org as i8)
     }
 }
