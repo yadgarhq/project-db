@@ -10,7 +10,7 @@ use tonic::Status;
 
 use crate::idem::{self, Claimed};
 use crate::path;
-use crate::pb::yadgar::common::v1::Meta;
+use crate::pb::yadgar::common::v1::{Meta, Visibility};
 use crate::pb::yadgar::project::v1::*;
 use crate::service::ProjectDb;
 use crate::sql::{internal, scope_of};
@@ -138,10 +138,12 @@ impl ProjectDb {
         // UUIDv7: time-ordered, so keyset pagination and index locality behave
         // (D42). The URN is what leaves this service; the raw uuid never does.
         let id = format!("yadgar:project:{}", uuid::Uuid::now_v7());
+        let class = Class::of(&req.path, &scope.user_id);
         let inserted = sqlx::query(
             "INSERT INTO project
-               (id, version, path, display_name, status, created_by, updated_by)
-             VALUES (?, 1, ?, ?, ?, ?, ?)",
+               (id, version, path, display_name, status, source_repo, owner_user_id, visibility,
+                created_by, updated_by)
+             VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&req.path)
@@ -149,6 +151,9 @@ impl ProjectDb {
         // ACTIVE, assigned. `RegisterProjectRequest` carries no status field, so
         // there is nothing here a caller could have asked for and been refused.
         .bind(ProjectStatus::Active as i8)
+        .bind(class.source_repo.as_deref())
+        .bind(class.owner_user_id.as_deref())
+        .bind(class.visibility)
         .bind(&scope.user_id)
         .bind(&scope.user_id)
         .execute(&mut *tx)
@@ -175,6 +180,81 @@ impl ProjectDb {
         idem::record(&mut tx, scope, req.idempotency.as_ref(), &response).await?;
         tx.commit().await.map_err(internal)?;
         Ok(response)
+    }
+}
+
+/// The class columns a registration lands with, DERIVED FROM THE PATH.
+///
+/// # The class is not a field on the request, and it does not need to be
+///
+/// `RegisterProjectRequest` carries `path` and `display_name` and nothing else.
+/// That is not a gap for the CLASS itself: ADR-0605 made the class structural, so
+/// `local/<account>/<path>` IS the private class by construction of the id and
+/// `crate::path::is_private_class` reads it off the path — the same predicate
+/// `ck_project_class_path` applies in the engine, spelled twice on purpose so a
+/// disagreement is impossible rather than unlikely.
+///
+/// # `source_repo` IS A STAGE-1 PLACEHOLDER, AND IT IS WRONG FOR TWO REAL ROWS
+///
+/// **An org registration is given its OWN PATH as `source_repo`, and that is not
+/// what given 3 of `plans/project-validation.md` needs.** The plan has the seed
+/// repository register the ORG ROOT carrying its own address, so that an
+/// unregistered org path resolves upward to that row and the gateway composes
+/// "open a PR against `<root.source_repo>`" from data. A root row's path is a
+/// SINGLE SEGMENT — `yadgarhq` — and the repository that governs it is one
+/// beneath. Those differ by construction, and this code cannot tell them apart.
+///
+/// The second row it is wrong for is a marker-declared monorepo subpath:
+/// `yadgarhq/docs/plans` is governed by `yadgarhq/docs`, and this names it
+/// `yadgarhq/docs/plans`.
+///
+/// **NEITHER IS FIXABLE IN THIS STAGE, and the reason is the contract rather than
+/// the code.** Closing it needs a `source_repo` field on
+/// `RegisterProjectRequest`, in `yadgarhq/proto` — and the plan's own stage 2 adds
+/// the field only to `ResolveProjectResponse`, which is the read side. So no stage
+/// of the plan as written commissions the register-side field, and stage 3's seed
+/// row is not buildable correctly until one does.
+///
+/// **WHY A PLACEHOLDER RATHER THAN A REFUSAL.** `ck_project_class` requires an org
+/// row to carry SOMETHING, so the alternatives are this value or refusing every
+/// org registration — which would turn this rpc off for the class that is most of
+/// the estate, on behalf of a field nothing can yet send.
+/// `tests/class.rs::a_single_segment_registration_names_itself_which_given_3_says_it_must_not`
+/// pins the wrong value with that reasoning attached, so the day the field arrives,
+/// a test fails and points at this comment.
+struct Class {
+    source_repo: Option<String>,
+    owner_user_id: Option<String>,
+    visibility: i8,
+}
+
+impl Class {
+    fn of(path: &str, actor: &str) -> Self {
+        if crate::path::is_private_class(path) {
+            Self {
+                source_repo: None,
+                // THE CALLER, and the ACCOUNT SEGMENT IS NOT CHECKED AGAINST IT
+                // HERE. ADR-0605 requires that a `local/<account>/…` registration
+                // carry the caller's own account, and assigns the check to ledger
+                // 641's composition point rather than to this module: the account
+                // RENDERING is an open choice there, and `project-db` cannot map a
+                // `user_id` onto a path segment without it. `scope.user_id` is the
+                // gateway-resolved identity (never self-asserted), so the owner
+                // recorded here is right; what is not yet enforced is that it
+                // matches the segment.
+                owner_user_id: Some(actor.to_string()),
+                // D12's default for the private class.
+                visibility: Visibility::Private as i8,
+            }
+        } else {
+            Self {
+                // See this type's header: a placeholder, wrong for a root row and
+                // for a monorepo subpath, and unfixable without a contract field.
+                source_repo: Some(path.to_string()),
+                owner_user_id: None,
+                visibility: Visibility::Org as i8,
+            }
+        }
     }
 }
 

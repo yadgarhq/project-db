@@ -68,6 +68,88 @@ fn all() -> Vec<Migration> {
 /// the counter the contract declares and the value `Meta.version` carries, and
 /// `TouchProjects` is held to not moving it — see that function — precisely so
 /// the guarantee is already true when the movers arrive.
+///
+/// # The class columns, and why they are CUT INTO THIS MIGRATION rather than
+/// appended as a fifth
+///
+/// **THIS FILE'S STANDING RULE IS APPEND-NEVER-EDIT, and the one thing that
+/// overrides it is an OPERATOR STATEMENT rather than a measurement.** "Nobody is
+/// using the system, not even the operator" is given 8 of
+/// `plans/project-validation.md`, and migration ceremony for data that does not
+/// exist is cost with no buyer. Development databases are dropped and recreated.
+///
+/// **WHAT THAT LICENCE DOES NOT SAY IS THAT NO DATABASE EXISTS.** It says no
+/// database holds rows anybody wants. This module IS deployed — measured
+/// 2026-09-12: newest tag `v0.1.18`, the `yadgar-deployable` topic, and
+/// `argocd/versions/project-db.yaml` pinning image `0.1.14` by digest. So a
+/// `project` table that already applied version 1 sits at ledger version 4 with
+/// nothing pending, never receives these columns, and answers every
+/// `RegisterProject` with `Unknown column 'source_repo'`. The recovery is
+/// `DROP DATABASE`, which deletes registered projects, and a project path is a
+/// partition key nothing can retag. `MIGRATION_NOTES.md` carries the row count to
+/// take first and the ordering the operator has to decide.
+///
+/// **NOTHING ELSE IN THIS FILE MAY BE EDITED ON THIS ARGUMENT.** It was spent
+/// once, on the migration that creates the table, while the cost of spending it
+/// is a conversation rather than a restore.
+///
+/// `source_repo` is the repository whose PR flow governs an ORG namespace —
+/// the value the gateway's `PROJECT_UNREGISTERED_ORG` remediation names, so that
+/// "open a PR against X" is composed from DATA rather than from convention.
+/// `owner_user_id` is the owner of a PRIVATE project, which is the one the
+/// register-time guard ADR-0605 requires must check.
+///
+/// **THE CLASS IS ONE FACT — THE PATH — AND THE COLUMNS ARE CONSTRAINED TO
+/// AGREE WITH IT.** ADR-0605 made that structural: a private project is
+/// `local/<account>/<path>` BY CONSTRUCTION OF THE ID, never by a flag. So there
+/// is deliberately NO `kind` enum beside these columns; a second value for one
+/// concept is the drift shape ADR-0569's rationale names and rejects. What the
+/// columns carry is what each class NEEDS, and two CHECKs hold them to the path:
+///
+/// - `ck_project_class` — exactly one of the two is non-null. A row in no class
+///   has no PR target and no owner; a row in two has both, and which one governs
+///   depends on which column a reader happened to inspect.
+/// - `ck_project_class_path` — an owner is present exactly when the path is under
+///   `local/`. Without it a row could hold an org path and an owner, or a `local/`
+///   path answering to a PR flow, and the gateway's private and org refusal
+///   classes would both be reachable for one path.
+///
+/// Two facts that can disagree is drift; two facts the ENGINE constrains equal is
+/// one fact stored twice.
+///
+/// **`path` CARRIES MIGRATION 4'S COLLATION PIN, FOLDED FORWARD, AND THAT IS
+/// WHAT MAKES THE SECOND CHECK CORRECT.** `LIKE 'local/%'` is evaluated under the
+/// column's own collation. Left on `@@collation_server` — which no deployment in
+/// this estate states — the comparison's case-sensitivity is a property of
+/// whichever engine an operator happened to start. Measured on `mariadb:11.8.9`
+/// against this exact CHECK: with `path` collating `utf8mb4_bin`, a row at
+/// `LOCAL/jaguar/thing` carrying a `source_repo` and no owner is ACCEPTED, and
+/// the store then holds an ORG project inside the reserved private root — in a
+/// spelling `path::refuse_reserved_root` folds and this CHECK does not. Under
+/// `utf8mb4_general_ci` the same row is refused, error 4025 naming
+/// `ck_project_class_path`. `tests/class.rs` executes both directions.
+///
+/// **MIGRATION 4 IS LEFT EXACTLY AS IT IS, and the question it was written to
+/// dodge is now answered rather than dodged.** Its `MODIFY` of this column is a
+/// no-op once the pin is here — re-applying a collation a column already carries
+/// changes nothing, as that migration's own comment says — and its second
+/// statement, on `project_alias.alias_path`, is still the only thing pinning
+/// that column. The open worry was whether MariaDB permits `MODIFY` on a column a
+/// CHECK constraint references. Measured on `mariadb:11.8.9`: it does, and
+/// `SHOW CREATE TABLE` afterwards still carries both constraints. Every test in
+/// this repository runs all four migrations in order, so that is exercised on
+/// every run rather than taken on trust.
+///
+/// **`visibility` IS `NOT NULL` WITH NO `DEFAULT`, deliberately.** It governs who
+/// may SEE the row in a listing — the read-side disclosure ADR-0605 names and
+/// leaves open — and it is D12's default per class: `PRIVATE` for a private
+/// project, `ORG` for an organisational one. No default in the DDL, because
+/// `VISIBILITY_UNSPECIFIED` is zero and the contract says it is "never persisted";
+/// a column defaulting to it would store a non-value on any insert path that
+/// forgot to bind one. There is no `CHECK (visibility <> 0)`: the plan specifies
+/// two constraints and this builds two, and `tests/class.rs` asserts no row
+/// carries the zero.
+///
 fn create_project() -> Migration {
     Migration {
         version: 1,
@@ -75,16 +157,24 @@ fn create_project() -> Migration {
         sql: "CREATE TABLE project (
                   id            VARCHAR(96)     NOT NULL PRIMARY KEY,
                   version       BIGINT UNSIGNED NOT NULL DEFAULT 1,
-                  path          VARCHAR(255)    NOT NULL,
+                  path          VARCHAR(255)    CHARACTER SET utf8mb4
+                                                COLLATE utf8mb4_general_ci NOT NULL,
                   display_name  VARCHAR(255)    NOT NULL,
                   status        TINYINT         NOT NULL,
+                  source_repo   VARCHAR(255)    NULL,
+                  owner_user_id VARCHAR(64)     NULL,
+                  visibility    TINYINT         NOT NULL,
                   created_by    VARCHAR(64)     NOT NULL,
                   updated_by    VARCHAR(64)     NOT NULL,
                   created_at    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   last_seen_at  TIMESTAMP       NULL     DEFAULT NULL,
                   UNIQUE KEY uq_project_path (path),
-                  KEY ix_project_status (status)
+                  KEY ix_project_status (status),
+                  CONSTRAINT ck_project_class
+                    CHECK ((source_repo IS NOT NULL) <> (owner_user_id IS NOT NULL)),
+                  CONSTRAINT ck_project_class_path
+                    CHECK ((owner_user_id IS NOT NULL) = (path LIKE 'local/%'))
               ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
             .into(),
     }
@@ -231,9 +321,15 @@ fn project_write_idempotency() -> Migration {
 /// over it. An operator meeting 1062 has two rows to reconcile before this
 /// applies, and the message names the index that says which.
 ///
-/// Today none of that arises: this module has no tag, no `yadgar-deployable`
-/// topic and no `argocd/versions` entry, so there is no populated column
-/// anywhere to rebuild.
+/// **THIS PARAGRAPH WAS TRUE WHEN IT WAS WRITTEN AND IS NOW FALSE — measured
+/// 2026-09-12, all three clauses.** It said: "Today none of that arises: this
+/// module has no tag, no `yadgar-deployable` topic and no `argocd/versions`
+/// entry, so there is no populated column anywhere to rebuild." The newest tag is
+/// `v0.1.18`, the repository carries the `yadgar-deployable` topic, and
+/// `argocd/versions/project-db.yaml` pins image `0.1.14` by digest. A populated
+/// column may well exist. Kept rather than deleted because
+/// `create_project`'s own header cites it, and a claim that quietly stops being
+/// true is worse read as still holding than read as retracted.
 ///
 /// **THE TWO PATH COLUMNS MOVE TOGETHER AND NOTHING ELSE MOVES WITH THEM.**
 /// `project.display_name` and `project_write.project_id` keep the server

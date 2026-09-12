@@ -63,3 +63,78 @@ filed here because ledger 653 is scoped to this repository, but `yadgarhq/config
 or `yadgarhq/estate` may be a better home for machine-prerequisite notes that
 apply across every clone in the estate — the orchestrator's call, not this
 pull request's.
+
+## Migration 1 was CUT FRESH: every existing `project-db` database must be dropped (ledger 881)
+
+**THIS MODULE IS DEPLOYED, AND THE CLAIM THAT IT IS NOT IS STALE.**
+`src/schema.rs`'s migration 4 says "this module has no tag, no
+`yadgar-deployable` topic and no `argocd/versions` entry, so there is no
+populated column anywhere to rebuild". Measured 2026-09-12, all three clauses
+are now FALSE: the newest tag is `v0.1.18`, the repository carries the
+`yadgar-deployable` topic, and `argocd/versions/project-db.yaml` pins image
+`0.1.14` by digest. The repository also holds a `chart/` and a `Containerfile`.
+That sentence was true when it was written and is quoted here only to say it
+must not be relied on again.
+
+**No cluster command was run to write this note, and none may be**: reading a
+deployed database is outside what this session does. So whether the live
+instance's `project` table HOLDS ROWS is NOT established here. What follows
+therefore applies to the deployed database as well as to developer machines, and
+the operator has to decide the ordering.
+
+**What changed.** `src/schema.rs`'s migration 1 (`create_project`) gained three
+columns — `source_repo`, `owner_user_id`, `visibility` — two CHECK constraints,
+and migration 4's collation pin on `path`, folded forward. Migration 1 was
+EDITED rather than a fifth migration appended. That breaks this file's standing
+append-never-edit rule, on the one licence the rule admits: nobody uses the
+system, so there is no data to carry forward
+(`plans/project-validation.md`, given 8).
+
+**The consequence, and it is silent.** A database that already applied migration
+1 records version 4 in the ledger and has nothing pending, so it never receives
+the new columns. `RegisterProject` against it then fails with
+`Unknown column 'source_repo' in 'INSERT INTO'` — an `INTERNAL` with a message
+no caller can act on. Nothing detects this at boot.
+
+**IT DESTROYS DATA WHEN IT IS APPLIED TO A POPULATED DATABASE.** The only
+recovery from the silent state above is `DROP DATABASE`, which deletes every
+registered project — and a project path is a partition key, so every memory,
+wiki page, ADR and task stamped with a deleted project's path is orphaned rather
+than moved (D52, D53; `RenameProject` is `UNIMPLEMENTED` and the retag job does
+not exist). The plan's given 8 says nobody uses the system, not even the
+operator, which is what licenses this at all — but that is an operator statement
+and not a row count. **Count the rows before dropping anything deployed:**
+
+```
+SELECT COUNT(*) FROM project;
+```
+
+Zero makes this free. Non-zero is a conversation, not a command: record the
+paths first, because nothing in this estate can move a record from one project
+to another afterwards.
+
+**What to run, for every database this module has ever migrated:**
+
+```
+# The test databases are named by the test that created them, all prefixed
+# `project_db_`. List them first, then drop them.
+podman exec project-db-test mariadb -uroot -pci \
+  -e "SHOW DATABASES LIKE 'project\_db\_%'"
+podman exec project-db-test mariadb -uroot -pci \
+  -e "DROP DATABASE IF EXISTS <each name listed above>"
+```
+
+Simplest and what this session did: throw the container away and start a fresh
+one, per the README's own recipe. `World::fresh` drops and recreates its own
+database per test, so a fresh container needs nothing else.
+
+**Verify after applying:**
+
+```
+export YADGAR_TEST_DSN='mysql://root:ci@127.0.0.1:13306/probe'
+cargo test --all-features --test class
+```
+
+Eight tests must pass. They perform real INSERTs and assert on the constraint
+name the engine reports, so a green run is the engine enforcing rather than the
+DDL declaring.
