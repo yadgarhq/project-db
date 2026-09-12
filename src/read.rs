@@ -86,7 +86,7 @@ impl ProjectDb {
         // coin-flip if it ever becomes reachable.
         let best = found
             .iter()
-            .max_by_key(|(matched, _, _, via_alias)| (matched.len(), -*via_alias))
+            .max_by_key(|(matched, _, _, via_alias, _)| (matched.len(), -*via_alias))
             .ok_or_else(|| {
                 Status::not_found(format!(
                     "no registered project matches {:?} or any ancestor of it. Nothing is ever \
@@ -97,7 +97,7 @@ impl ProjectDb {
                 ))
             })?;
 
-        let (matched, resolved, status, via_alias) = best;
+        let (matched, resolved, status, via_alias, source_repo) = best;
         // ASCII CASE IS FOLDED HERE FOR THE THIRD TIME IN THIS RESOLUTION, AND
         // ALL THREE MUST STAY THE SAME COMPARISON — the reserved-segment refusal
         // above, the chain filter above, and this. `matched` is a value the
@@ -130,6 +130,27 @@ impl ProjectDb {
             // the one the caller sent.
             via_alias: exact && *via_alias == 1,
             status: *status as i32,
+            // **THE RESOLVED ROW'S VALUE, NEVER THE CANDIDATE'S, and that
+            // distinction is the whole point of the field.** When an
+            // unregistered path resolves UPWARD to its nearest registered
+            // ancestor (D52 as amended by D53), the ANCESTOR is the row that
+            // governs the candidate — so the ancestor's `source_repo` names the
+            // repository whose PR flow a caller must open a pull request
+            // against. `candidate_path` names nothing registered at all in that
+            // case, and a repository derived from it would be a repository that
+            // does not exist. `best` is the row the walk selected, so this is
+            // the ancestor's column and not the candidate's string.
+            //
+            // **`NULL` BECOMES `""`, AND THE CONTRACT IS THAT EMPTY MEANS
+            // ABSENT.** `ck_project_class` (`crate::schema`, migration 4) makes
+            // `source_repo` NULL for every PRIVATE-class row — a `local/...`
+            // project carries `owner_user_id` instead — and proto3 gives a bare
+            // `string` no presence bit, so absence has no other spelling on the
+            // wire. The field comment in `yadgar/project/v1` states it from the
+            // other side: a consumer MUST read empty as absent and MUST NOT
+            // interpolate it into prose. No sentinel is invented here; a
+            // sentinel would be a value a consumer could print.
+            source_repo: source_repo.clone().unwrap_or_default(),
         })
     }
 
@@ -314,6 +335,15 @@ impl ProjectDb {
 /// `matched` is what was found, `resolved` is the live path it names, and
 /// the two differ exactly when an alias was followed.
 ///
+/// **`source_repo` IS SELECTED FROM `p` IN BOTH ARMS, AND THE SECOND ARM IS THE
+/// ONE THAT GETS FORGOTTEN.** The alias arm already joins `project`, so the
+/// column is reachable there and is read from the same table — an alias-matched
+/// row must carry the value of the LIVE row it resolves to, because that row is
+/// the one whose PR flow governs the path. `project_alias` holds no such column
+/// and must never grow one: a second copy is the two-facts-that-drift shape
+/// ADR-0569 rejects. `tests/resolve.rs` asserts the alias arm separately for
+/// exactly this reason; editing one arm and not the other compiles.
+///
 /// AUDIT: the interpolations are this module's own column list and a
 /// count of `?` placeholders; every caller value is a bound parameter.
 ///
@@ -325,21 +355,22 @@ impl ProjectDb {
 async fn ancestor_rows(
     pool: &sqlx::MySqlPool,
     chain: &[&str],
-) -> Result<Vec<(String, String, i8, i64)>, Status> {
+) -> Result<Vec<(String, String, i8, i64, Option<String>)>, Status> {
     let holes = holes(chain.len());
     let sql = format!(
         "SELECT p.path AS matched, p.path AS resolved, p.status AS status,
-                CAST(0 AS SIGNED) AS via_alias
+                CAST(0 AS SIGNED) AS via_alias, p.source_repo AS source_repo
            FROM project p
           WHERE p.path IN ({holes})
           UNION ALL
          SELECT a.alias_path AS matched, p.path AS resolved, p.status AS status,
-                CAST(1 AS SIGNED) AS via_alias
+                CAST(1 AS SIGNED) AS via_alias, p.source_repo AS source_repo
            FROM project_alias a
            JOIN project p ON p.id = a.project_id
           WHERE a.alias_path IN ({holes})"
     );
-    let mut query = sqlx::query_as::<_, (String, String, i8, i64)>(sqlx::AssertSqlSafe(sql));
+    let mut query =
+        sqlx::query_as::<_, (String, String, i8, i64, Option<String>)>(sqlx::AssertSqlSafe(sql));
     for candidate in chain.iter().chain(chain.iter()) {
         query = query.bind(*candidate);
     }

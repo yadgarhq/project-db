@@ -61,6 +61,37 @@ the idempotency key it was handed.
 organisation-level projects are defined by GitOps rather than created on demand
 (D43, D52).
 
+## `source_repo` names the repository, and the caller supplies it
+
+An ORG-class project is governed by a repository's pull request flow, and
+`ResolveProject` answers with that repository so the gateway can compose "open a
+pull request against X" from DATA rather than from convention. A path is a
+NAMESPACE and may name no repository of its own — a single-segment anchor like
+`yadgarhq` names one and the repository governing it is one beneath (ADR-0673) —
+so the two values are different by construction and neither is derivable from the
+other.
+
+`RegisterProjectRequest.source_repo` carries it. **Both directions are refused
+rather than defaulted**, which is ADR-0569's rule applied to the one column the
+gateway turns into prose:
+
+- an ORG registration sending no `source_repo` answers `INVALID_ARGUMENT`. An
+  earlier build fell back to the row's own path, and a remediation naming a
+  namespace as if it were a repository is worse than the degraded one the gateway
+  emits without the field at all.
+- a PRIVATE registration (`local/...`) sending one answers `INVALID_ARGUMENT` too.
+  `ck_project_class` already makes the combination unstorable, but the engine's
+  answer is `INTERNAL "storage error"`, which names neither the field nor the
+  reason.
+
+`ResolveProject.source_repo` is **the RESOLVED row's** value and never the
+candidate's. An unregistered path resolves upward to its nearest registered
+ancestor, and the ancestor is the row that governs it — so the ancestor's
+repository is what a refusal has to name. A PRIVATE-class row answers the empty
+string: `ck_project_class` gives it an owner instead, proto3 gives a bare `string`
+no presence bit, and the contract is that a consumer reads empty as ABSENT. No
+sentinel is invented, because a sentinel is a value a consumer could print.
+
 ## Nothing is ever auto-created
 
 `ResolveProject` answers an unregistered path with its **nearest registered

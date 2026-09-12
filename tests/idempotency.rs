@@ -154,6 +154,12 @@ async fn the_stored_fingerprint_is_the_digest_of_the_request_without_its_scope()
         scope: None,
         path: A.into(),
         display_name: "Alpha".into(),
+        // WHAT THE HARNESS SENT, taken from the same function that sent it.
+        // `register_as` fills `source_repo` from `default_source_repo`, and the
+        // digest is over every field but the two above — so a literal stating a
+        // different repository here would fail on a byte the request really
+        // carried, and a reader would look for the defect in `idem.rs`.
+        source_repo: support::default_source_repo(A).into(),
     };
     let expected: [u8; 32] = Sha256::digest(canonical.encode_to_vec()).into();
 

@@ -109,6 +109,9 @@ impl ProjectDb {
             )));
         }
 
+        // ABOVE THE TRANSACTION, on the cost argument — see [`Class`].
+        let class = Class::of(&req.path, &scope.user_id, &req.source_repo)?;
+
         let mut tx = self.pool.begin().await.map_err(internal)?;
         if let Claimed::Replay(original) = idem::claim(
             &mut tx,
@@ -138,7 +141,6 @@ impl ProjectDb {
         // UUIDv7: time-ordered, so keyset pagination and index locality behave
         // (D42). The URN is what leaves this service; the raw uuid never does.
         let id = format!("yadgar:project:{}", uuid::Uuid::now_v7());
-        let class = Class::of(&req.path, &scope.user_id);
         let inserted = sqlx::query(
             "INSERT INTO project
                (id, version, path, display_name, status, source_repo, owner_user_id, visibility,
@@ -183,45 +185,66 @@ impl ProjectDb {
     }
 }
 
-/// The class columns a registration lands with, DERIVED FROM THE PATH.
+/// The class columns a registration lands with: the CLASS from the path, the
+/// ORG class's repository from the REQUEST.
 ///
-/// # The class is not a field on the request, and it does not need to be
+/// # The class itself is not a field on the request, and it does not need to be
 ///
-/// `RegisterProjectRequest` carries `path` and `display_name` and nothing else.
-/// That is not a gap for the CLASS itself: ADR-0605 made the class structural, so
-/// `local/<account>/<path>` IS the private class by construction of the id and
-/// `crate::path::is_private_class` reads it off the path — the same predicate
-/// `ck_project_class_path` applies in the engine, spelled twice on purpose so a
-/// disagreement is impossible rather than unlikely.
+/// ADR-0605 made the class structural, so `local/<account>/<path>` IS the private
+/// class by construction of the id and [`crate::path::is_private_class`] reads it
+/// off the path — the same predicate `ck_project_class_path` applies in the
+/// engine, spelled twice on purpose so a disagreement is impossible rather than
+/// unlikely. Nothing on the wire could override that without letting a caller
+/// declare a class its own path contradicts.
 ///
-/// # `source_repo` IS A STAGE-1 PLACEHOLDER, AND IT IS WRONG FOR TWO REAL ROWS
+/// # `source_repo` COMES FROM THE CALLER NOW, AND THE PLACEHOLDER IS GONE
 ///
-/// **An org registration is given its OWN PATH as `source_repo`, and that is not
-/// what given 3 of `plans/project-validation.md` needs.** The plan has the seed
-/// repository register the ORG ROOT carrying its own address, so that an
-/// unregistered org path resolves upward to that row and the gateway composes
-/// "open a PR against `<root.source_repo>`" from data. A root row's path is a
-/// SINGLE SEGMENT — `yadgarhq` — and the repository that governs it is one
-/// beneath. Those differ by construction, and this code cannot tell them apart.
+/// This type used to give an org registration its OWN PATH as `source_repo`, and
+/// said so against itself: wrong for a namespace anchor, whose path is a single
+/// segment naming a NAMESPACE while the repository governing it is one beneath;
+/// wrong again for a marker-declared monorepo subpath, where `yadgarhq/docs/plans`
+/// is governed by `yadgarhq/docs`. The comment it left added that neither was
+/// fixable without a contract field, and that no stage of
+/// `plans/project-validation.md` as written commissioned one.
 ///
-/// The second row it is wrong for is a marker-declared monorepo subpath:
-/// `yadgarhq/docs/plans` is governed by `yadgarhq/docs`, and this names it
-/// `yadgarhq/docs/plans`.
+/// **`RegisterProjectRequest.source_repo` IS THAT FIELD** (`yadgarhq/proto`
+/// v1.13.0), and this module now pins `v1.15.0`. So the value is the CALLER'S,
+/// the placeholder is deleted, and an anchor registered by the seed repository
+/// names the repository that governs the namespace rather than naming the
+/// namespace.
 ///
-/// **NEITHER IS FIXABLE IN THIS STAGE, and the reason is the contract rather than
-/// the code.** Closing it needs a `source_repo` field on
-/// `RegisterProjectRequest`, in `yadgarhq/proto` — and the plan's own stage 2 adds
-/// the field only to `ResolveProjectResponse`, which is the read side. So no stage
-/// of the plan as written commissions the register-side field, and stage 3's seed
-/// row is not buildable correctly until one does.
+/// # Both directions are REFUSED rather than defaulted
 ///
-/// **WHY A PLACEHOLDER RATHER THAN A REFUSAL.** `ck_project_class` requires an org
-/// row to carry SOMETHING, so the alternatives are this value or refusing every
-/// org registration — which would turn this rpc off for the class that is most of
-/// the estate, on behalf of a field nothing can yet send.
-/// `tests/class.rs::a_single_segment_registration_names_itself_which_given_3_says_it_must_not`
-/// pins the wrong value with that reasoning attached, so the day the field arrives,
-/// a test fails and points at this comment.
+/// **AN ORG REGISTRATION WITHOUT `source_repo` IS `INVALID_ARGUMENT`.** Falling
+/// back to the path is the defect above, and ADR-0569's rule is that a missing
+/// input is refused rather than silently defaulted — a wrong remediation is worse
+/// than an absent one, because the gateway composes prose from this column and
+/// would instruct an operator to open a pull request against a namespace. The
+/// refusal is affordable: measured across the estate on 2026-09-12, NO caller of
+/// `RegisterProject` exists in any repository, and the CLI serves `Login`, `Enrol`
+/// and `Serve` only — so there is no request shape this turns off and nothing
+/// seeded to migrate.
+///
+/// # Where the two refusals happen, and why it is not a correctness question
+///
+/// `Class::of` is called ABOVE `pool.begin()`, which is where
+/// `path::refuse_reserved_root` sits and for the argument that comment makes: a
+/// request that cannot succeed should not take a connection out of the pool and
+/// open a transaction to be told so. Now that this type REFUSES, it is a
+/// validation and belongs with the other ones.
+///
+/// **THAT PLACEMENT IS A COST ARGUMENT AND NOT A CORRECTNESS ONE**, which is worth
+/// stating so nobody restores it as though a row depended on it. A refusal below
+/// `idem::claim` would roll the claim back with the transaction and leave the key
+/// free — transaction ATOMICITY, the same answer `register`'s own comment gives
+/// about the alias check — so no row lands and no key is spent either way.
+///
+/// **A PRIVATE REGISTRATION CARRYING ONE IS REFUSED TOO, and by this function
+/// rather than by the engine.** `ck_project_class` requires exactly one of
+/// `source_repo` and `owner_user_id`, so the combination is already impossible to
+/// store — but what a caller would receive is `sql::internal`'s
+/// `INTERNAL "storage error"`, which names neither the field nor the reason. A
+/// request that sets both is a caller error and reads as one here.
 struct Class {
     source_repo: Option<String>,
     owner_user_id: Option<String>,
@@ -229,9 +252,24 @@ struct Class {
 }
 
 impl Class {
-    fn of(path: &str, actor: &str) -> Self {
+    /// `source_repo` is the request's field, EMPTY MEANING ABSENT.
+    ///
+    /// proto3 gives a bare `string` no presence bit, so `""` is the only spelling
+    /// absence has on the wire, and the contract says so from the other side: a
+    /// consumer reads empty as absent. An org request whose field is empty has
+    /// therefore sent nothing, and is refused by the same branch as one that
+    /// omitted the field — because on the wire they are the same request.
+    fn of(path: &str, actor: &str, source_repo: &str) -> Result<Self, Status> {
         if crate::path::is_private_class(path) {
-            Self {
+            if !source_repo.is_empty() {
+                return Err(Status::invalid_argument(format!(
+                    "source_repo was sent as {source_repo:?} for the private-class path \
+                     {path:?}. A `local/...` project belongs to one account and carries an \
+                     owner, never a repository — `ck_project_class` in the store admits \
+                     exactly one of the two, so this row cannot exist. Omit source_repo"
+                )));
+            }
+            Ok(Self {
                 source_repo: None,
                 // THE CALLER, and the ACCOUNT SEGMENT IS NOT CHECKED AGAINST IT
                 // HERE. ADR-0605 requires that a `local/<account>/…` registration
@@ -245,15 +283,26 @@ impl Class {
                 owner_user_id: Some(actor.to_string()),
                 // D12's default for the private class.
                 visibility: Visibility::Private as i8,
-            }
+            })
         } else {
-            Self {
-                // See this type's header: a placeholder, wrong for a root row and
-                // for a monorepo subpath, and unfixable without a contract field.
-                source_repo: Some(path.to_string()),
+            if source_repo.is_empty() {
+                return Err(Status::invalid_argument(format!(
+                    "source_repo is required to register the organisation-class path {path:?} \
+                     and was not sent. An org project is governed by a repository's pull \
+                     request flow, and that repository is what a refusal to resolve an \
+                     unregistered path names — a path is a NAMESPACE and may name no \
+                     repository of its own, so it cannot be used instead. Send the repository \
+                     whose PR flow governs this path"
+                )));
+            }
+            Ok(Self {
+                // THE CALLER'S, AND NEVER THE PATH. See this type's header: the
+                // path is what the placeholder used to be, and it is wrong for a
+                // namespace anchor and for a monorepo subpath.
+                source_repo: Some(source_repo.to_string()),
                 owner_user_id: None,
                 visibility: Visibility::Org as i8,
-            }
+            })
         }
     }
 }

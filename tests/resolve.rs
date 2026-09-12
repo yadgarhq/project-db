@@ -411,3 +411,169 @@ async fn an_absent_scope_is_refused() {
         .expect_err("scope is attested by the gateway and is never absent");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
+
+/// The repository that governs [`A`]'s namespace in the tests below.
+///
+/// **NEITHER A FIXTURE PATH NOR [`FIXTURE_REPO`], and both exclusions are load
+/// bearing.** Not a path, because the defect this field closes was `source_repo`
+/// BEING the row's own path — so a value derivable from `A` or `A_DEEP` would let
+/// a resolver returning `resolved_path` satisfy the assertion. Not the harness
+/// default either, because `World::register` fills the field from
+/// `default_source_repo`: a test asserting the default cannot distinguish "the
+/// value the registration carried" from "the value every org row in the fixture
+/// carries".
+const GOVERNING_REPO: &str = "pangolin-7c21/estate";
+
+/// **THE TEST THE WHOLE CHANGE EXISTS FOR.** An unregistered org path resolves
+/// upward to its nearest registered ancestor, and the ANCESTOR'S repository is
+/// what comes back.
+///
+/// That is the value the gateway composes `PROJECT_UNREGISTERED_ORG`'s remediation
+/// from — "open a pull request against `<source_repo>`" — and the candidate cannot
+/// supply it, because the candidate is the path that is registered NOWHERE. The
+/// row that governs it is the ancestor (D52 as amended by D53), so the ancestor's
+/// column is the answer, and `resolve` binds it from the row the walk selected
+/// rather than from `candidate_path`.
+///
+/// **THE MUTATION THAT REDS IT:** bind `req.candidate_path.clone()` into
+/// `source_repo` in `src/read.rs` instead of the row's column. Every other
+/// assertion in this file stays green, because no other one reads the field.
+#[tokio::test]
+async fn a_descendant_resolves_to_the_ancestors_repository_and_never_to_its_own_path() {
+    let w = world("project_db_resolve_source_repo_ancestor").await;
+    w.register_with_repo(A, "Alpha", GOVERNING_REPO)
+        .await
+        .expect("an org registration naming the repository that governs it");
+
+    // A_DEEP is INSIDE A and is registered nowhere, which is the case the field
+    // exists for: a caller working in a directory nobody has registered yet.
+    let r = w.resolve(A_DEEP).await.expect("resolve");
+    assert!(!r.exact, "A_DEEP has no row of its own; A is its ancestor");
+    assert_eq!(r.resolved_path, A);
+    assert_eq!(
+        r.source_repo, GOVERNING_REPO,
+        "the RESOLVED row's repository. The gateway names it in the remediation for a path that \
+         is registered nowhere, so it cannot be derived from the candidate"
+    );
+    assert_ne!(
+        r.source_repo, A_DEEP,
+        "the candidate's own path is what a resolver reading the wrong value would answer"
+    );
+
+    // AND THE EXACT CASE TOO, so the assertion above is not satisfied by a
+    // resolver that always answers the ancestor's column and never the row's.
+    let r = w.resolve(A).await.expect("resolve");
+    assert!(r.exact);
+    assert_eq!(
+        r.source_repo, GOVERNING_REPO,
+        "the row found is its own resolved row when the match is exact"
+    );
+}
+
+/// **A PRIVATE-CLASS ROW ANSWERS `""`, WHICH THE CONTRACT DEFINES AS ABSENT.**
+///
+/// `ck_project_class` gives every `local/...` row an `owner_user_id` and NULL
+/// `source_repo` — a private project is governed by one account, not by a pull
+/// request flow. proto3 gives a bare `string` no presence bit, so `NULL` has
+/// exactly one spelling on the wire, and the field comment in
+/// `yadgar/project/v1` states the other side of it: a consumer reads empty as
+/// absent and must not interpolate it into prose.
+///
+/// **SO THE ASSERTION IS ON EMPTINESS AND NOT ON A SENTINEL.** A sentinel would be
+/// a value a consumer could print — the gateway would compose "open a pull request
+/// against `<none>`" — which is the class of wrong remediation this whole change
+/// removes. The rpc must still SUCCEED: an absent repository is a legitimate
+/// answer about a private project and never an error.
+///
+/// **THE MUTATION THAT REDS IT:** decode the column as `String` rather than
+/// `Option<String>` in `ancestor_rows`. Then this resolve fails at DECODE and the
+/// `expect` panics, which is also the reason the type is what it is.
+#[tokio::test]
+async fn a_private_class_row_resolves_with_an_empty_repository_rather_than_a_sentinel() {
+    let w = world("project_db_resolve_source_repo_private").await;
+    const PRIVATE: &str = "local/jaguar-4f80/thing";
+    w.register(PRIVATE).await;
+
+    let r = w.resolve(PRIVATE).await.expect(
+        "a private project resolves; having no source repository is an ANSWER, not a failure",
+    );
+    assert!(r.exact);
+    assert_eq!(
+        r.source_repo, "",
+        "empty IS absent on the wire, and a private row has no repository by `ck_project_class`"
+    );
+
+    // AND A DESCENDANT OF IT, because the ancestor walk is the path that carries
+    // the column and NULL travels it too.
+    let r = w
+        .resolve(&format!("{PRIVATE}/deeper"))
+        .await
+        .expect("resolve");
+    assert!(!r.exact);
+    assert_eq!(r.resolved_path, PRIVATE);
+    assert_eq!(
+        r.source_repo, "",
+        "a NULL column survives the ancestor walk"
+    );
+}
+
+/// **THE SECOND UNION ARM, WHICH IS THE ONE AN EDIT MISSES.** `ancestor_rows`
+/// selects the live path in one arm and `project_alias` in the other, and a change
+/// made to one of them compiles.
+///
+/// An alias-matched row must answer with the LIVE row's repository: the alias is a
+/// former path of that project (D53), the project is what is governed, and the
+/// repository belongs to the project rather than to the spelling that found it.
+/// `project_alias` holds no such column and must never grow one — a second copy is
+/// the two-facts-that-drift shape ADR-0569 rejects — so the value comes off the
+/// joined `project` row in both arms.
+///
+/// **THE MUTATION THAT REDS IT, AND WHY THE OBVIOUS ONE DOES NOT.** Deleting
+/// `p.source_repo` from the second arm alone leaves the two arms with DIFFERENT
+/// COLUMN COUNTS, which MariaDB refuses at prepare time — `sql::internal` maps
+/// that to `INTERNAL` and every test in this file goes red, including the ancestor
+/// one above, so it proves nothing about which arm this test reaches. The mutation
+/// that discriminates keeps the arity and changes the value: select `NULL` in place
+/// of `p.source_repo` in the ALIAS arm only. Measured on `mariadb:11.8.9` — this
+/// test goes red and
+/// `a_descendant_resolves_to_the_ancestors_repository_and_never_to_its_own_path`
+/// stays green.
+#[tokio::test]
+async fn an_alias_matched_resolve_answers_with_the_live_rows_repository() {
+    let w = world("project_db_resolve_source_repo_alias").await;
+    let id = w
+        .register_with_repo(B, "Bravo", GOVERNING_REPO)
+        .await
+        .expect("register")
+        .meta
+        .expect("meta")
+        .id;
+    // Seeded: `RenameProject` is held back in this release, and the alias read
+    // paths are contract obligations regardless — see `World::seed_alias`.
+    w.seed_alias(A, &id).await;
+
+    // A IS THE CANDIDATE AND IT HAS NO LIVE ROW, so only the alias arm can match
+    // it. That is what makes this test reach the arm rather than merely cover a
+    // path the live arm would have answered anyway.
+    let r = w.resolve(A).await.expect("a former path resolves");
+    assert_eq!(r.resolved_path, B, "the alias resolves to the live path");
+    assert!(r.via_alias, "the candidate matched an alias");
+    assert_eq!(
+        r.source_repo, GOVERNING_REPO,
+        "the repository belongs to the PROJECT the alias names, not to the alias"
+    );
+
+    // AND THROUGH THE ALIAS AS AN ANCESTOR, which is the same arm reached by the
+    // walk rather than by an exact match — the construction that strands a whole
+    // subtree when the arm is wrong.
+    let r = w
+        .resolve(&format!("{A}/still-pointing-at-the-old-parent"))
+        .await
+        .expect("resolve");
+    assert_eq!(r.resolved_path, B);
+    assert!(!r.exact);
+    assert_eq!(
+        r.source_repo, GOVERNING_REPO,
+        "a descendant of a FORMER parent path still names the repository that governs it"
+    );
+}
