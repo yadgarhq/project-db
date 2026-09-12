@@ -219,21 +219,26 @@ async fn a_legitimate_row_of_each_class_is_accepted() {
     );
 }
 
-/// `RegisterProject` still serves, and it fills the class columns from the PATH.
+/// `RegisterProject` still serves. The CLASS comes from the path; the org class's
+/// repository comes from the REQUEST.
 ///
-/// The contract carries no class fields — `RegisterProjectRequest` is `path` plus
-/// `display_name` — so the service derives them, and this is where that
-/// derivation is pinned. `visibility` is D12's default per class: `PRIVATE` for a
-/// private project, `ORG` for an organisational one.
+/// The contract carries no class FLAG — a project is private by construction of
+/// its id (ADR-0605) — so the service reads the class off the path, and this is
+/// where that derivation is pinned. What the service does NOT derive any more is
+/// `source_repo`: `RegisterProjectRequest.source_repo` carries it, and the value
+/// stored is the caller's. `visibility` is D12's default per class: `PRIVATE` for
+/// a private project, `ORG` for an organisational one.
 #[tokio::test]
-async fn registration_fills_the_class_columns_from_the_path() {
+async fn registration_fills_the_class_columns_from_the_path_and_the_request() {
     let w = World::fresh("project_db_class_register").await;
 
     w.try_register(ORG, "").await.expect("an org registration");
     assert_eq!(
         w.stored_class(ORG).await,
-        (Some(ORG.to_string()), None),
-        "an org registration carries a source repository and no owner"
+        (Some(FIXTURE_REPO.to_string()), None),
+        "an org registration carries the repository the REQUEST named and no owner. It is not \
+         the path: `FIXTURE_REPO` is not derivable from `ORG`, so this assertion cannot be \
+         satisfied by the placeholder this field used to hold"
     );
     assert_eq!(
         w.stored_visibility(ORG).await,
@@ -268,36 +273,134 @@ async fn registration_fills_the_class_columns_from_the_path() {
     }
 }
 
-/// **A TRIPWIRE, NOT A GUARANTEE: `source_repo` IS THE PATH ITSELF, AND GIVEN 3
-/// OF THE PLAN NEEDS IT NOT TO BE.**
+/// **THE TRIPWIRE FIRED, AND THIS IS WHAT IT WAS WAITING FOR.**
 ///
-/// The plan's given 3 has the seed repository register the org ROOT carrying its
-/// own address as `source_repo`, so that an unregistered org path resolves upward
-/// to that row and the gateway composes "open a PR against `<root.source_repo>`"
-/// FROM DATA. The root row's path is a single segment — `pangolin-7c21` here,
-/// `yadgarhq` in the estate — and the repository governing it is one BENEATH it.
-/// Those are different values by construction, and this stage cannot tell them
-/// apart: `RegisterProjectRequest` has no `source_repo` field, and the plan's
-/// stage 2 adds one only to `ResolveProjectResponse`, which is the read side.
+/// This test used to assert the WRONG value on purpose. The plan's given 3 has the
+/// seed repository register the org ROOT carrying, as `source_repo`, the address
+/// of the repository that governs the namespace — so that an unregistered org path
+/// resolves upward to that row and the gateway composes "open a PR against
+/// `<root.source_repo>`" FROM DATA. A root row's path is a single segment —
+/// `pangolin-7c21` here, `yadgarhq` in the estate — and it names a NAMESPACE
+/// rather than a repository (ADR-0673); the repository that governs it is one
+/// BENEATH. Those differ by construction, and stage 1 could not tell them apart,
+/// because `RegisterProjectRequest` had no field to carry the difference. So the
+/// assertion pinned the anchor naming ITSELF, said why, and said that the day the
+/// field arrived this is what would fail and point at the sentence to change.
 ///
-/// So this test asserts the WRONG value on purpose, and says why. When the
-/// register contract gains the field, this test is the thing that fails and
-/// points at the sentence that has to change. The same limitation applies to a
-/// marker-declared subpath: `yadgarhq/docs/plans` is governed by `yadgarhq/docs`,
-/// and registering it here would claim itself.
+/// The field arrived — `yadgarhq/proto` v1.13.0, and this module pins v1.15.0 —
+/// and this is that change. The anchor now names the repository the REQUEST
+/// named, and the assertion is what the plan asked for rather than a note about
+/// why it could not be.
+///
+/// **THE REPOSITORY IS DELIBERATELY NOT DERIVABLE FROM `ROOT`.** A value one
+/// segment beneath the anchor is what the plan describes, and it is also the only
+/// shape that can fail: were it `ROOT` itself, the deleted placeholder would
+/// satisfy this assertion and the test would be green against the defect it
+/// exists to have closed.
 #[tokio::test]
-async fn a_single_segment_registration_names_itself_which_given_3_says_it_must_not() {
+async fn the_namespace_anchor_names_the_repository_that_governs_it_rather_than_itself() {
     let w = World::fresh("project_db_class_root_row").await;
     // `ROOT` is a single segment and not the reserved one, so it registers.
-    w.try_register(ROOT, "the namespace anchor")
+    w.register_with_repo(ROOT, "the namespace anchor", REPO)
         .await
         .expect("a single-segment org path is registrable");
     assert_eq!(
         w.stored_class(ROOT).await,
-        (Some(ROOT.to_string()), None),
-        "STAGE 1 LIMITATION: the anchor names ITSELF as the repository whose PR flow governs \
-         it, which is not a repository at all. Given 3 of plans/project-validation.md needs a \
-         repository BENEATH the root here, and no rpc in the contract can carry one. When \
-         RegisterProject gains a source_repo field, this assertion is what must change."
+        (Some(REPO.to_string()), None),
+        "the anchor names the repository whose PR flow governs the namespace, which is one \
+         segment BENEATH it and is never the anchor's own path"
+    );
+    assert_ne!(
+        w.stored_class(ROOT).await.0,
+        Some(ROOT.to_string()),
+        "STAGE 1's placeholder stored the row's own path here, and given 3 of \
+         plans/project-validation.md says it must not: an anchor's path is a namespace and \
+         names no repository at all, so the gateway would compose a refusal instructing an \
+         operator to open a pull request against a namespace"
+    );
+}
+
+/// **AN ORG REGISTRATION THAT NAMES NO REPOSITORY IS REFUSED, NOT DEFAULTED.**
+///
+/// This is the other half of the test above and the reason that one can be
+/// trusted. Falling back to the path is the defect the field exists to close, so a
+/// registration sending nothing must fail rather than quietly land the old wrong
+/// value — ADR-0569's rule that a missing input is refused and never silently
+/// defaulted, applied to the one column the gateway composes prose from. A wrong
+/// remediation is worse than the degraded one the gateway emits without it.
+///
+/// **DRIVEN THROUGH `register_with_repo` WITH AN EXPLICIT `""`, NEVER THROUGH
+/// `try_register`.** The fixture's `try_register` fills the field from
+/// `default_source_repo` so that three dozen tests which are not about it need not
+/// state one — which makes it a door AROUND this requirement. A test of the
+/// requirement driven through that door would stay green with the guard deleted.
+///
+/// **EMPTY IS WHAT AN OMITTED FIELD LOOKS LIKE.** proto3 gives a bare `string` no
+/// presence bit, so there is no request this fixture could send that is more
+/// absent than this one, and no second case to write.
+///
+/// **AND NO ROW LANDS.** A refusal that inserted first and reported an error
+/// afterwards would leave the store holding exactly the row the guard exists to
+/// keep out, and the `expect_err` alone cannot see it.
+#[tokio::test]
+async fn an_org_registration_naming_no_repository_is_refused_and_lands_nothing() {
+    let w = World::fresh("project_db_class_org_no_repo").await;
+
+    let err = w
+        .register_with_repo(ORG, "", "")
+        .await
+        .expect_err("an org project is governed by a repository, and none was named");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert!(
+        err.message().contains("source_repo"),
+        "the refusal names the missing field; it said {:?}",
+        err.message()
+    );
+
+    assert_eq!(
+        w.row_count(ORG).await,
+        0,
+        "the refusal left a row behind, which is the row the guard exists to keep out"
+    );
+}
+
+/// **A PRIVATE REGISTRATION CARRYING A REPOSITORY IS REFUSED BEFORE THE ENGINE
+/// SEES IT.**
+///
+/// `ck_project_class` already makes the combination unstorable —
+/// `a_private_path_with_a_source_repo_is_refused_by_the_engine` above is that
+/// assertion, and it reaches around the service to prove the CHECK is not
+/// decorative. This is the other layer: what a CALLER receives. Left to the
+/// engine, the answer is `sql::internal`'s `INTERNAL "storage error"`, which names
+/// neither the field nor the class nor the reason, and a caller reading it has no
+/// way to know it sent one field too many.
+///
+/// So the assertion is on the CODE and on the TEXT. `INVALID_ARGUMENT` is the
+/// caller-error half; naming `source_repo` is what makes the answer actionable.
+/// Delete the guard and this goes red on the code — the engine answers
+/// `INTERNAL` — which is the mutation this test is for.
+#[tokio::test]
+async fn a_private_registration_carrying_a_repository_is_refused_before_the_engine() {
+    let w = World::fresh("project_db_class_private_sent_repo").await;
+
+    let err = w
+        .register_with_repo(PRIVATE, "", REPO)
+        .await
+        .expect_err("a `local/` path belongs to an account and carries an owner, not a repository");
+    assert_eq!(
+        err.code(),
+        tonic::Code::InvalidArgument,
+        "a caller error, and not the engine's constraint arriving as INTERNAL"
+    );
+    assert!(
+        err.message().contains("source_repo"),
+        "the refusal names the field that must not have been sent; it said {:?}",
+        err.message()
+    );
+
+    assert_eq!(
+        w.row_count(PRIVATE).await,
+        0,
+        "the refusal left a row behind"
     );
 }

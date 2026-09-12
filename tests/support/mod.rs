@@ -37,6 +37,34 @@ pub const A_DEEP: &str = "pangolin-7c21/alpha/gamma";
 pub const U1: &str = "u1";
 pub const U2: &str = "u2";
 
+/// The repository an ORG-class fixture row names as the governor of its
+/// namespace, when the test is not about the value.
+///
+/// **IT IS NOT DERIVABLE FROM ANY FIXTURE PATH, and that is the property it
+/// exists for.** `source_repo` used to BE the row's own path, and the whole point
+/// of the field is that the two differ — a namespace anchor's path names a
+/// namespace while the repository governing it is one beneath. A default equal to
+/// the path would let an assertion about `ResolveProject.source_repo` be satisfied
+/// by an implementation returning `resolved_path`, and nothing would distinguish
+/// the two. So it hangs off [`ROOT`] to stay plausible and ends in a segment no
+/// fixture path uses.
+pub const FIXTURE_REPO: &str = "pangolin-7c21/seed-repo";
+
+/// The `source_repo` a fixture sends for *path* when the test is not about it.
+///
+/// **STATED HERE RATHER THAN IMPORTED FROM `write::register`**, the same argument
+/// [`class_of`] makes: a fixture that borrowed the derivation could not fail when
+/// the derivation is wrong. The rule is the contract's own — REQUIRED for the org
+/// class, ABSENT for the private class, where absence is the empty string because
+/// proto3 gives a bare `string` no presence bit.
+pub fn default_source_repo(path: &str) -> &'static str {
+    if is_private_path(path) {
+        ""
+    } else {
+        FIXTURE_REPO
+    }
+}
+
 /// The pool every fixture opens.
 ///
 /// **A fixture that says nothing runs at sqlx's default of ten, which is a size
@@ -141,6 +169,15 @@ impl World {
         self.register_as(path, display_name, U1, None).await
     }
 
+    /// A registration whose `source_repo` is [`default_source_repo`]'s.
+    ///
+    /// **THE DEFAULT IS A CONVENIENCE FOR TESTS THAT ARE NOT ABOUT THE FIELD, AND
+    /// EVERY TEST THAT IS ABOUT IT USES [`World::register_with_repo`] INSTEAD.**
+    /// `source_repo` is REQUIRED for an org registration, so a harness with no
+    /// default would make three dozen unrelated tests state a repository they do
+    /// not care about — but a default is also a door around the requirement, and a
+    /// test of the requirement driven through this function would stay green with
+    /// the guard deleted. The two doors are separate for that reason.
     pub async fn register_as(
         &self,
         path: &str,
@@ -148,12 +185,47 @@ impl World {
         user: &str,
         key: Option<&str>,
     ) -> Result<RegisterProjectResponse, Status> {
+        self.register_request(path, display_name, user, key, default_source_repo(path))
+            .await
+    }
+
+    /// A registration stating `source_repo` EXACTLY, including empty.
+    ///
+    /// The door every assertion about the field goes through. Empty is a request a
+    /// caller can really send — proto3 gives a bare `string` no presence bit, so
+    /// `""` is what an omitted field decodes to — which is why this takes a `&str`
+    /// rather than an `Option`.
+    pub async fn register_with_repo(
+        &self,
+        path: &str,
+        display_name: &str,
+        source_repo: &str,
+    ) -> Result<RegisterProjectResponse, Status> {
+        self.register_request(path, display_name, U1, None, source_repo)
+            .await
+    }
+
+    /// The one `RegisterProjectRequest` literal in this fixture.
+    ///
+    /// **EXHAUSTIVE, NEVER `..Default::default()`** — the argument
+    /// [`World::scope`] makes, and the one the v1.15.0 bump proved: the missing
+    /// `source_repo` was a compile error here, which is what a rest pattern would
+    /// have turned into a silently empty field.
+    async fn register_request(
+        &self,
+        path: &str,
+        display_name: &str,
+        user: &str,
+        key: Option<&str>,
+        source_repo: &str,
+    ) -> Result<RegisterProjectResponse, Status> {
         self.db
             .register_project(Request::new(RegisterProjectRequest {
                 idempotency: key.map(|k| Idempotency { key: k.into() }),
                 scope: self.scope(path, user),
                 path: path.into(),
                 display_name: display_name.into(),
+                source_repo: source_repo.into(),
             }))
             .await
             .map(|r| r.into_inner())
@@ -552,6 +624,22 @@ impl World {
         .expect("select request_fingerprint")
     }
 
+    /// How many rows the table holds at *path* — 0 or 1, because `path` is
+    /// UNIQUE.
+    ///
+    /// **A REFUSAL IS ONLY PROVED BY THE ABSENCE OF THE ROW.** A guard that
+    /// inserted and then reported an error would satisfy an `expect_err`, and the
+    /// store would hold exactly the row the guard exists to keep out.
+    /// `stored_class` cannot be used for this: it `fetch_one`s and panics on an
+    /// absent row, which is the outcome under test.
+    pub async fn row_count(&self, path: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM project WHERE path = ?")
+            .bind(path)
+            .fetch_one(&self.pool)
+            .await
+            .expect("count")
+    }
+
     pub async fn alias_count(&self) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM project_alias")
             .fetch_one(&self.pool)
@@ -560,26 +648,39 @@ impl World {
     }
 }
 
-/// The class columns a fixture row carries, derived from its PATH.
+/// The class columns a fixture row carries. The CLASS from its path; the org
+/// class's repository from [`FIXTURE_REPO`].
 ///
-/// **THE SAME RULE `write::register` APPLIES, and stated here rather than
-/// imported so the fixture cannot borrow a defect from the code under test.**
-/// The rule is one line of the plan: the class is the path, and a private path is
-/// `local/<account>/<path>` by construction of the id (ADR-0605). What the
-/// fixture must not do is decide a class the CHECKs would refuse — a fixture that
-/// tripped a constraint in every unrelated test would say nothing about either.
+/// **THE CLASS RULE IS STATED HERE RATHER THAN IMPORTED so the fixture cannot
+/// borrow a defect from the code under test**, and it is one line of the plan: the
+/// class is the path, and a private path is `local/<account>/<path>` by
+/// construction of the id (ADR-0605). What the fixture must not do is decide a
+/// class the CHECKs would refuse — a fixture that tripped a constraint in every
+/// unrelated test would say nothing about either.
+///
+/// **THE REPOSITORY IS A SENTINEL AND NOT THE PATH.** It used to be the path,
+/// mirroring what `write::register` derived; `write::register` no longer derives
+/// it at all, and a seeded row has no request to take it from. The sentinel is the
+/// stronger choice in any case — see [`FIXTURE_REPO`] — because a seeded row whose
+/// repository equals its own path cannot distinguish a resolver returning the
+/// column from one returning `resolved_path`.
 ///
 /// The BARE reserved segment is org-class here, and that is not an oversight:
 /// `local` does not match `local/%`, so the engine's own rule puts it on the org
 /// side, and `tests/registry.rs` seeds exactly that row to present a store
 /// holding one.
 fn class_of(path: &str, actor: &str) -> (Option<String>, Option<String>, i8) {
-    let private = path
-        .split_once('/')
-        .is_some_and(|(root, _)| root.eq_ignore_ascii_case("local"));
-    if private {
+    if is_private_path(path) {
         (None, Some(actor.to_string()), Visibility::Private as i8)
     } else {
-        (Some(path.to_string()), None, Visibility::Org as i8)
+        (Some(FIXTURE_REPO.to_string()), None, Visibility::Org as i8)
     }
+}
+
+/// Is *path* in the PRIVATE class? The engine's `LIKE 'local/%'` under a
+/// case-folding collation, and `crate::path::is_private_class`, spelled a third
+/// time — deliberately, for the reason [`class_of`] gives.
+fn is_private_path(path: &str) -> bool {
+    path.split_once('/')
+        .is_some_and(|(root, _)| root.eq_ignore_ascii_case("local"))
 }
