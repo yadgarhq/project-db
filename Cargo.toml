@@ -10,7 +10,7 @@ description = "The project module's -db twin: the registry of projects, serving 
 # Pinned by RELEASE TAG, not by branch — a published tag never moves in this
 # organisation, so `v0.2.0` names exactly one commit for as long as it exists
 # (the same reasoning that pins images by digest (D61) and actions by SHA (D62)).
-yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.2.6" }
+yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.2.5" }
 # In tonic 0.14 prost codegen moved out to tonic-prost; there is no "prost"
 # feature on tonic itself.
 tonic = { version = "0.14", default-features = false, features = [
