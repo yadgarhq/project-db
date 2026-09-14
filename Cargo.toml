@@ -60,7 +60,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # cheaper and its collision is the exact lie the rule exists to stop: two
 # different requests fingerprinting alike are replayed, and the caller is told a
 # request nobody performed succeeded.
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
