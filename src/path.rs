@@ -28,9 +28,10 @@
 //! CONFIGURATION (D43), and ADR-0569 says a configuration knob has no
 //! compiled-in default — a value nobody chose, used as if somebody had, is
 //! exactly what that rule exists to delete. So the cap needs a line in
-//! `yadgarhq/config`'s `project-db.yaml`, that file is deliberately empty in the
-//! change that introduces this module, and inventing a constant here to stand in
-//! for it would be the defect rather than a placeholder for the fix. What bounds
+//! `yadgarhq/config`'s `project-db.yaml`, that file holds zero knobs and, per
+//! ADR-0740, is no longer mounted in this repository at all — inventing a
+//! constant here to stand in for it would be the defect rather than a
+//! placeholder for the fix. What bounds
 //! a path today is its LENGTH: [`MAX_LEN`] is the width of the column that
 //! stores it, so a path longer than the store can hold is refused with a
 //! sentence instead of being truncated by the engine. That is a length bound and
