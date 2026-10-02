@@ -66,16 +66,20 @@ pub mod pb {
         }
         pub mod project {
             pub mod v1 {
-                // `yadgarhq/project` met this lint first (`project/src/lib.rs:65`):
-                // prost carries `project.proto`'s comment above `service
-                // ProjectService` through verbatim, and its bullet list has flush
-                // continuation lines. Scoped to this generated module only, so a
+                // `yadgarhq/project` met this lint first, at the
+                // `#![allow(clippy::doc_lazy_continuation)]` on its own
+                // `pb::yadgar::project::v1` module: prost carries
+                // `project.proto`'s comment above `service ProjectService`
+                // through verbatim, and its bullet list has flush continuation
+                // lines. Scoped to this generated module only, so a
                 // hand-written lazy continuation elsewhere still fails the build.
                 // THIS PER-MODULE ALLOW IS THE ACCEPTED PERMANENT FIX, not a
-                // stopgap pending a proto-side change: `yadgarhq/proto` generates
-                // `project.proto`'s comment from source this repository does not
-                // own (D16: no hand-editing generated output), so suppressing
-                // the lint at the generated module is how this repository is
+                // stopgap pending a proto-side change: `project.proto` is
+                // source this repository does not own, maintained in
+                // `yadgarhq/proto`; prost generates this repository's Rust
+                // bindings from it and carries the comment through verbatim
+                // (D16: no hand-editing generated output), so suppressing the
+                // lint at the generated module is how this repository is
                 // meant to carry it.
                 #![allow(clippy::doc_lazy_continuation)]
 
