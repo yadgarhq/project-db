@@ -61,8 +61,29 @@ fn env_required(key: &str) -> Result<String, String> {
     }
 }
 
+/// The process entry point: run the service, and print a refusal as its SENTENCE.
+///
+/// **NOT `main() -> Result`.** Rust prints a `main` that returns `Err` with
+/// DEBUG, so a `BootError` arrived as its variant name (`ObsoleteRequireTls`)
+/// and even a refusal already converted to its sentence arrived as a quoted,
+/// escaped string — `Error: "… is \"0\" …"`. ADR-0569 asks a refusal to name the
+/// knob and where it is set; an operator reading a crash loop must get that as
+/// plain text. `tests/boot_message.rs` runs the binary and holds it.
+///
+/// The exit status is unchanged: an `Err` from `main` exits 1, and so does
+/// `ExitCode::FAILURE`.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .json()
         // A DEFAULT, because from_default_env() with RUST_LOG unset enables
@@ -85,6 +106,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // paragraph naming the mode to use instead. Every refusal in `boot` is
     // written as a sentence for somebody reading a crash loop.
     let config = boot::pool_config(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
+    // The migration lock's wait, read beside the pool's knobs (ledger 814,
+    // ADR-0837). `store` has no default for it any more.
+    let migration_lock =
+        boot::migration_lock(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
 
     // THE LISTENER'S transport, read and CHECKED before anything else — the PEM
     // decoded, the certificate matched against its key. A deployment that asked
@@ -157,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. MIGRATE. Refuses outright if the database is ahead of this binary.
     let pool = yadgar_store::pool::connect(&config, &secret).await?;
-    let applied = migrate::apply(&pool, &schema::migrations()?).await?;
+    let applied = migrate::apply(&pool, &schema::migrations()?, &migration_lock).await?;
     tracing::info!(applied, "schema at migration {applied}");
 
     // 3. SERVE. Only now.

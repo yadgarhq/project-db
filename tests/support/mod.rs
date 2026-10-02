@@ -127,7 +127,10 @@ impl World {
             .connect(&format!("{}/{name}", base()))
             .await
             .expect("pool");
-        yadgar_store::migrate::apply(&pool, &schema::migrations().expect("set"))
+        // The wait a chart would render. Stated in the TEST because
+        // `yadgar-store` has no default for it any more (ADR-0569, ledger 814).
+        let lock = yadgar_store::migrate::LockOptions::new(60).expect("60 seconds is a wait");
+        yadgar_store::migrate::apply(&pool, &schema::migrations().expect("set"), &lock)
             .await
             .expect("migrate");
         Self {
