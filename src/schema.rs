@@ -257,10 +257,14 @@ fn project_write_idempotency() -> Migration {
 }
 
 /// **THE TWO PATH COLUMNS DECIDE WHETHER A PROJECT PATH IS CASE-SENSITIVE, AND
-/// UNTIL NOW NOTHING IN THIS REPOSITORY SAID SO.** Migrations 1 and 2 declare
-/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE`, so `project.path` and
-/// `project_alias.alias_path` take whatever `@@collation_server` happens to be.
-/// This migration writes the answer down.
+/// UNTIL NOW NOTHING IN THIS REPOSITORY SAID SO.** That was true of both
+/// columns when this migration was written; migration 1's `path` column has
+/// since been amended (`create_project`, below) to declare
+/// `COLLATE utf8mb4_general_ci` directly. Migration 2 still declares
+/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE` on `alias_path`, which still
+/// takes whatever `@@collation_server` happens to be without this migration.
+/// This migration is what makes the answer binding for both columns rather
+/// than resting on either migration's own text.
 ///
 /// **THE CODE HAS AN OPINION AND THE COLUMN DID NOT.** Two call sites fold ASCII
 /// case in Rust because they believe the engine does: `path::refuse_reserved_root`,
