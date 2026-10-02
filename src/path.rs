@@ -95,10 +95,13 @@ pub const RESERVED_ROOT: &str = "local";
 /// **THE EQUALITY IS ASCII-CASE-INSENSITIVE, AND THE STORE IS WHAT DECIDES
 /// THAT.** `project.path` and `project_alias.alias_path` collate
 /// `utf8mb4_general_ci` (`crate::schema`, migration 4), which is case- AND
-/// accent-insensitive. That is DECLARED rather than inherited: migrations 1 and
-/// 2 named no `COLLATE`, so until migration 4 the columns took
-/// `@@collation_server` and this guard rested on a setting no deployment
-/// states. `uq_project_path`
+/// accent-insensitive. That is DECLARED rather than inherited: migration 2
+/// still names no `COLLATE` for `alias_path`, so without migration 4 that
+/// column takes `@@collation_server` and this guard rests on a setting no
+/// deployment states. Migration 1's `path` column has since been amended to
+/// declare `COLLATE utf8mb4_general_ci` directly (`crate::schema`,
+/// `create_project`); migration 4 remains the formal declaration for
+/// `alias_path` and reasserts the same value on `path`. `uq_project_path`
 /// therefore holds ONE slot for every ASCII-case spelling of the segment, so a
 /// byte-exact comparison here lets `LOCAL` pass the guard, reach the INSERT and
 /// occupy the reserved slot — permanently, because the retirement the paragraph

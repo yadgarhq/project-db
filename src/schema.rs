@@ -257,20 +257,25 @@ fn project_write_idempotency() -> Migration {
 }
 
 /// **THE TWO PATH COLUMNS DECIDE WHETHER A PROJECT PATH IS CASE-SENSITIVE, AND
-/// UNTIL NOW NOTHING IN THIS REPOSITORY SAID SO.** Migrations 1 and 2 declare
-/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE`, so `project.path` and
-/// `project_alias.alias_path` take whatever `@@collation_server` happens to be.
-/// This migration writes the answer down.
+/// UNTIL NOW NOTHING IN THIS REPOSITORY SAID SO.** That was true of both
+/// columns when this migration was written; migration 1's `path` column has
+/// since been amended (`create_project`) to declare
+/// `COLLATE utf8mb4_general_ci` directly. Migration 2 still declares
+/// `DEFAULT CHARSET=utf8mb4` with no `COLLATE` on `alias_path`, which still
+/// takes whatever `@@collation_server` happens to be without this migration.
+/// This migration is what makes the answer binding for both columns rather
+/// than resting on either migration's own text.
 ///
 /// **THE CODE HAS AN OPINION AND THE COLUMN DID NOT.** Two call sites fold ASCII
 /// case in Rust because they believe the engine does: `path::refuse_reserved_root`,
 /// so `LOCAL` cannot occupy the slot reserved for `local`, and
 /// `write::touch::deduplicated`, so two spellings of one path are not counted as two
 /// paths resolving to one row. Both are right today and neither is guaranteed.
-/// Measured on `mariadb:11.8.9` against the tables exactly as migrations 1 and 2
-/// declare them, `information_schema.COLUMNS` reports `utf8mb4_uca1400_ai_ci`
-/// for both columns — case-insensitive, because that is this image's server
-/// default. An operator whose engine defaults to `utf8mb4_bin` or to a `_cs`
+/// Measured on `mariadb:11.8.9` against the tables as migrations 1 and 2
+/// declared them when this migration was written, `information_schema.COLUMNS`
+/// reported `utf8mb4_uca1400_ai_ci` for both columns — case-insensitive,
+/// because that is this image's server default. An operator whose engine
+/// defaults to `utf8mb4_bin` or to a `_cs`
 /// collation gets a store in which `alpha` and `ALPHA` are two rows; then
 /// `deduplicated` folds them into one path, touches one row, reports that
 /// everything it named resolved, and silently never advances the other project's
@@ -346,6 +351,15 @@ fn project_write_idempotency() -> Migration {
 /// somewhere — happens to be false for this module today, and following it
 /// anyway is what keeps a developer's existing database and a fresh one the same
 /// schema.
+///
+/// **#33 (`20a2f3a`) LATER EDITED MIGRATION 1 ANYWAY, under exactly the
+/// licence this paragraph named.** `create_project`'s `path` column now
+/// declares `COLLATE utf8mb4_general_ci` directly, so on a fresh engine this
+/// migration's `ALTER TABLE project MODIFY path` re-applies a collation
+/// `path` already carries — the same no-op this migration's own two
+/// statements rely on when it re-runs after a partial failure. `alias_path`
+/// took no such edit, so this migration remains the only place
+/// `project_alias.alias_path` gets one.
 ///
 /// The two statements are one migration because they are one decision. DDL is
 /// not transactional on this engine, so a failure between them leaves the ledger
