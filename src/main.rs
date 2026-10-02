@@ -85,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // paragraph naming the mode to use instead. Every refusal in `boot` is
     // written as a sentence for somebody reading a crash loop.
     let config = boot::pool_config(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
+    // The migration lock's wait, read beside the pool's knobs (ledger 814,
+    // ADR-0837). `store` has no default for it any more.
+    let migration_lock =
+        boot::migration_lock(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
 
     // THE LISTENER'S transport, read and CHECKED before anything else — the PEM
     // decoded, the certificate matched against its key. A deployment that asked
@@ -157,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. MIGRATE. Refuses outright if the database is ahead of this binary.
     let pool = yadgar_store::pool::connect(&config, &secret).await?;
-    let applied = migrate::apply(&pool, &schema::migrations()?).await?;
+    let applied = migrate::apply(&pool, &schema::migrations()?, &migration_lock).await?;
     tracing::info!(applied, "schema at migration {applied}");
 
     // 3. SERVE. Only now.
