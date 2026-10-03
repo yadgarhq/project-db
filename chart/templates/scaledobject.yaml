@@ -1,13 +1,14 @@
+{{- /*
+THE MAP CHECK IS NOT BELT-AND-SUSPENDERS: THIS TEMPLATE RENDERS BEFORE
+`render-checks.yaml` DOES. Measured on helm 4.3.0: with `autoscaling` set to a
+non-map scalar, `helm template` named THIS file's line with a raw two-level
+dot-chain template error — a crash that fires before `render-checks.yaml`'s clean
+`autoscaling` refusal (ADR-0850) ever runs. `kindIs "map"` short-circuits the `and`
+before `.Values.autoscaling.enabled` is dereferenced, so a bad shape here renders
+nothing instead of crashing, and the clean refusal downstream is what the adopter
+actually sees.
+*/}}
 {{- if and (kindIs "map" .Values.autoscaling) .Values.autoscaling.enabled }}
-# THE MAP CHECK IS NOT BELT-AND-SUSPENDERS: THIS TEMPLATE RENDERS BEFORE
-# `render-checks.yaml` DOES. Measured on helm 4.3.0: with `autoscaling` set to a
-# non-map scalar, `helm template` named THIS file's line with a raw two-level
-# dot-chain template error — a crash that fires before `render-checks.yaml`'s clean
-# `autoscaling` refusal (ADR-0850) ever runs. `kindIs "map"` short-circuits the `and`
-# before `.Values.autoscaling.enabled` is dereferenced, so a bad shape here renders
-# nothing instead of crashing, and the clean refusal downstream is what the adopter
-# actually sees.
-#
 # KEDA, not a bare HPA (D68): it wraps a plain HPA for the concurrency cases,
 # handles queue depth natively for the write path, and gives scale-to-zero for a
 # disabled plugin (D1). One mechanism instead of prometheus-adapter plus special

@@ -323,7 +323,7 @@ AUTOSCALING_SHAPE_ARMS = {
         '{{- if not (hasKey .Values "autoscaling") }}',
     ),
     "not-a-map": (
-        "`autoscaling` is a",
+        "`autoscaling` must be a map",
         '{{- if not (kindIs "map" .Values.autoscaling) }}',
     ),
     "enabled-absent": (

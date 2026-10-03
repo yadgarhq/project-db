@@ -160,19 +160,17 @@ markers and reads this whole file for them.
 {{- end }}
 {{- if not (kindIs "map" .Values.autoscaling) }}
 {{- fail (printf (join "" (list
-      "project-db: `autoscaling` is a %s rather than a mapping, so `autoscaling.enabled` cannot "
-      "be read out of it. `templates/scaledobject.yaml` and this file both gate on "
-      "`autoscaling.enabled` by bare truthiness, so a value in this shape does not reliably turn "
-      "autoscaling off — it previously crashed `scaledobject.yaml` outright. Write `autoscaling:` "
-      "as a mapping with `enabled: true` or `enabled: false`."))
-      (kindOf .Values.autoscaling)) }}
+      "project-db: `autoscaling` must be a map and is %s (%s). `autoscaling.enabled` is read "
+      "from inside it. Write `autoscaling:` as a block, with `enabled: true` or "
+      "`enabled: false` inside it."))
+      (kindOf .Values.autoscaling) (toJson .Values.autoscaling)) }}
 {{- end }}
 {{- if not (hasKey .Values.autoscaling "enabled") }}
 {{- fail (join "" (list
       "project-db: `autoscaling.enabled` is absent. This chart's `values.yaml` declares it false, "
       "so it is missing only when a values file wrote `enabled:` with NO VALUE — helm deletes a "
       "null-valued key a chart declares and restores no default. Write `autoscaling.enabled: "
-      "false` to leave the ScaledObject unrendered, or `true` to render it.")) }}
+      "false` to leave autoscaling off, or `true` to turn it on.")) }}
 {{- end }}
 {{- if not (kindIs "bool" (index .Values.autoscaling "enabled")) }}
 {{- fail (printf (join "" (list
