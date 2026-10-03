@@ -214,7 +214,26 @@ def test_mutation_closing_an_open_map_reddens() -> None:
 
 # ---------------------------------------------------------------------------
 # Render-level red/green cases (brief §5). Every assertion below reads the key
-# name and the JSON path fragment only, never helm's own sentence.
+# name and the JSON path fragment only, never helm's own sentence — and reads
+# the path in whichever of the two shapes the running helm prints. Measured:
+# helm 3.18.4 prints a dotted parent path with no quoting around the key
+# (`- autoscaling: Additional property enabeld is not allowed`, root case
+# `- (root): Additional property autoscalng is not allowed`); helm 3.20.2 and
+# 4.3.0 print a JSON-pointer path with the key quoted
+# (`- at '/autoscaling': additional properties 'enabeld' not allowed`, root
+# case `- at '': additional properties 'autoscalng' not allowed`). CI's
+# `ci/precommit` job pins 3.18.4; this suite is also run locally against
+# 3.20.2 and 4.3.0 (brief's measurement set), so both shapes must pass.
+
+
+def assert_schema_refusal(stderr: str, key: str, path: tuple[str, ...] = ()) -> None:
+    assert key in stderr, stderr
+    if path:
+        dotted = ".".join(path)
+        pointer = "/" + "/".join(path)
+        assert dotted in stderr or pointer in stderr, stderr
+    else:
+        assert "(root)" in stderr or "at ''" in stderr, stderr
 
 
 def baseline_object_count() -> int:
@@ -229,29 +248,25 @@ BASELINE_OBJECTS = baseline_object_count()
 def test_root_typo_is_refused_naming_the_key_at_the_root_path() -> None:
     result = render(CHART, "--set", "autoscalng.enabled=true")
     assert result.returncode != 0, "a root-level typo rendered"
-    assert "autoscalng" in result.stderr, result.stderr
-    assert "at ''" in result.stderr, result.stderr
+    assert_schema_refusal(result.stderr, "autoscalng")
 
 
 def test_one_level_down_typo_is_refused_naming_the_key_and_the_parent_path() -> None:
     result = render(CHART, "--set", "autoscaling.enabeld=true")
     assert result.returncode != 0, "a typo one level down rendered"
-    assert "enabeld" in result.stderr, result.stderr
-    assert "/autoscaling" in result.stderr, result.stderr
+    assert_schema_refusal(result.stderr, "enabeld", ("autoscaling",))
 
 
 def test_two_levels_down_typo_is_refused_naming_the_key_and_the_parent_path() -> None:
     result = render(CHART, "--set", "networkPolicy.scrapeFrom.namespac=x")
     assert result.returncode != 0, "a typo two levels down rendered"
-    assert "namespac" in result.stderr, result.stderr
-    assert "/networkPolicy/scrapeFrom" in result.stderr, result.stderr
+    assert_schema_refusal(result.stderr, "namespac", ("networkPolicy", "scrapeFrom"))
 
 
 def test_twin_only_two_levels_down_typo_under_database_instance_storage() -> None:
     result = render(CHART, "--set", "database.instance.storage.siz=10Gi")
     assert result.returncode != 0, "a typo under database.instance.storage rendered"
-    assert "siz" in result.stderr, result.stderr
-    assert "/database/instance/storage" in result.stderr, result.stderr
+    assert_schema_refusal(result.stderr, "siz", ("database", "instance", "storage"))
 
 
 def test_wrong_type_toggle_is_a_render_check_refusal_not_a_schema_refusal() -> None:
