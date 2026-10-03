@@ -112,6 +112,76 @@ eleven-shape table beside it is the gate on this block.
 {{- end }}
 
 {{/*
+THE SHAPE OF `autoscaling.enabled`, REFUSED BEFORE THE TOGGLE IS READ (ADR-0850
+widens ADR-0797 past a helm dependency `condition:` to any template-read toggle).
+
+`templates/scaledobject.yaml` and the KEDA check below both gate on
+`{{ if .Values.autoscaling.enabled }}` — bare truthiness, fail-open on a string
+exactly as `database.create` was. ADR-0797's rule applies unchanged: `kindIs "bool"`
+on the raw value, `hasKey` first because `kindOf` cannot tell a deleted key from an
+absent one.
+
+ONE LEVEL HIGHER THAN `database.create` NEEDS, AND THAT IS THE DIFFERENCE FROM IT.
+`database` is never itself the condition — only `.create` under it is — so that
+block never has to ask whether `database` is a map before calling `hasKey` on it.
+`autoscaling` IS written by an adopter sometimes, measured here: `autoscaling: x`
+(a bare scalar, not a mapping) passes helm's coalescing unchanged — the override
+wins outright, with no warning — and then `hasKey .Values.autoscaling "enabled"`
+would be handed a string rather than a map. Sprig's `hasKey` requires a
+`map[string]interface{}` argument, so that call does not fail open or closed, it
+RAISES, which is the same class of defect as the bare truthiness test just one level
+up. `kindIs "map"` on `autoscaling` is NEVER unsafe to call — unlike `hasKey` it
+classifies any value without erroring — so it runs as its OWN independent block,
+second, and `fail` aborts the whole render before the third block's `hasKey` is ever
+reached for a shape the second block already refused. The four blocks below stay
+INDEPENDENT `{{ if }}...{{ end }}` pairs for exactly that reason, never `else if`:
+`scripts/tests/test_render_checks.py`'s mutation case strips one arm at a time by
+finding its own opening and closing tags, which an `else if` chain sharing one
+closing tag cannot be decomposed into.
+
+MEASURED, THE SAME SHAPE CRASHES `templates/scaledobject.yaml` FIRST. On helm 4.3.0,
+`autoscaling: x` against this chart named `scaledobject.yaml:1:14` with a raw
+two-level dot-chain template error — before this file's checks run at all.
+`templates/scaledobject.yaml` carries its own `kindIs "map"` guard for exactly that
+reason: the refusal below is the message an adopter sees only once the FIRST reader
+stops crashing ahead of it.
+
+THE REFUSAL TEXT MAY NOT QUOTE THE RAISE TEXT IT REPLACES (ADR-0794), same rule as
+`database.create`'s block; `scripts/tests/test_render_checks.py` holds the banned
+markers and reads this whole file for them.
+*/}}
+{{- if not (hasKey .Values "autoscaling") }}
+{{- fail (join "" (list
+      "project-db: `autoscaling` is absent from the values, so `autoscaling.enabled` cannot be read. "
+      "Helm deletes a null-valued key that a chart in the tree declares, and restores no "
+      "default, so a values file writing `autoscaling:` with no value leaves this chart with "
+      "nothing under it. Write the keys you mean, or omit `autoscaling` entirely and this "
+      "chart's own defaults apply.")) }}
+{{- end }}
+{{- if not (kindIs "map" .Values.autoscaling) }}
+{{- fail (printf (join "" (list
+      "project-db: `autoscaling` must be a map and is %s (%s). `autoscaling.enabled` is read "
+      "from inside it. Write `autoscaling:` as a block, with `enabled: true` or "
+      "`enabled: false` inside it."))
+      (kindOf .Values.autoscaling) (toJson .Values.autoscaling)) }}
+{{- end }}
+{{- if not (hasKey .Values.autoscaling "enabled") }}
+{{- fail (join "" (list
+      "project-db: `autoscaling.enabled` is absent. This chart's `values.yaml` declares it false, "
+      "so it is missing only when a values file wrote `enabled:` with NO VALUE — helm deletes a "
+      "null-valued key a chart declares and restores no default. Write `autoscaling.enabled: "
+      "false` to leave autoscaling off, or `true` to turn it on.")) }}
+{{- end }}
+{{- if not (kindIs "bool" (index .Values.autoscaling "enabled")) }}
+{{- fail (printf (join "" (list
+      "project-db: `autoscaling.enabled` must be true or false and is %s (%s). A string, number, "
+      "map or list here is not a toggle: the template gates on bare truthiness, so \"false\", "
+      "\"no\", \"true\" and 1 all RENDER a ScaledObject while {}, 0 and [] do not, and nothing "
+      "tells you which one you wrote. Write the bare word `true` or `false`."))
+      (kindOf (index .Values.autoscaling "enabled")) (toJson (index .Values.autoscaling "enabled"))) }}
+{{- end }}
+
+{{/*
 KEDA, BEHIND THE TOGGLE THAT RENDERS THE ScaledObject.
 
 `autoscaling.enabled` renders `templates/scaledobject.yaml`, whose one kind is

@@ -301,6 +301,76 @@ EXPECTED_SHAPES_RENDERED = 2
 # template that rendered nothing under any shape would satisfy the first alone.
 EXPECTED_RENDERED_INSTANCES = (0, 1)
 
+# ── THE SHAPE OF `autoscaling.enabled`, AND ITS TWELVE WRITABLE SHAPES ───────
+# `templates/scaledobject.yaml` and `templates/render-checks.yaml`'s KEDA check both
+# gate on a BARE TRUTHINESS TEST, the same fail-open `database.create` had. ADR-0850
+# widens ADR-0797 past a helm dependency `condition:` to any template-read toggle, so
+# the same `kindIs "bool"`-with-`hasKey`-first rule applies here.
+
+# THE GROUP EVERY SHAPE RENDER NAMES, for the same reason MARIADB_API_VERSIONS exists:
+# without it the truthy shapes would abort at the KEDA render check instead of at the
+# shape refusal, discriminating on the exit code rather than the message.
+KEDA_API_VERSIONS = ("--api-versions", "keda.sh/v1alpha1")
+
+# THE FOUR ARMS OF THE REFUSAL. One more than `database.create`'s three: `autoscaling`
+# is itself sometimes written as a non-map scalar (`database` never is, only `.create`
+# under it is read by a condition), and `hasKey` raises rather than reading false when
+# handed one, so the SHAPE of `autoscaling` is checked before `hasKey` is ever called
+# on it.
+AUTOSCALING_SHAPE_ARMS = {
+    "autoscaling-absent": (
+        "`autoscaling` is absent from the values",
+        '{{- if not (hasKey .Values "autoscaling") }}',
+    ),
+    "not-a-map": (
+        "`autoscaling` must be a map",
+        '{{- if not (kindIs "map" .Values.autoscaling) }}',
+    ),
+    "enabled-absent": (
+        "`autoscaling.enabled` is absent.",
+        '{{- if not (hasKey .Values.autoscaling "enabled") }}',
+    ),
+    "not-a-bool": (
+        "`autoscaling.enabled` must be true or false",
+        '{{- if not (kindIs "bool" (index .Values.autoscaling "enabled")) }}',
+    ),
+}
+
+# EVERY SHAPE A VALUES FILE CAN WRITE AT `autoscaling` OR `autoscaling.enabled`, with
+# the outcome each one MUST have. `("render", n)` means exit 0 with n ScaledObject
+# objects. `("refuse", arm, kind)` means exit 1 with THAT arm's phrase, and — where
+# the arm is a kind test — the helm KIND NAME the message must print.
+AUTOSCALING_SHAPES = (
+    ("bool-false", "autoscaling:\n  enabled: false\n", ("render", 0)),
+    ("bool-true", "autoscaling:\n  enabled: true\n", ("render", 1)),
+    ("string-false", 'autoscaling:\n  enabled: "false"\n', ("refuse", "not-a-bool", "string")),
+    ("string-no", 'autoscaling:\n  enabled: "no"\n', ("refuse", "not-a-bool", "string")),
+    ("string-true", 'autoscaling:\n  enabled: "true"\n', ("refuse", "not-a-bool", "string")),
+    ("number-one", "autoscaling:\n  enabled: 1\n", ("refuse", "not-a-bool", "float64")),
+    ("number-zero", "autoscaling:\n  enabled: 0\n", ("refuse", "not-a-bool", "float64")),
+    # THE DELETED KEY, one level down. Helm deletes a null-valued key a chart in the
+    # tree declares and restores no default, so this reaches the template as `enabled`
+    # ABSENT, not as the chart's own `false`.
+    ("enabled-null", "autoscaling:\n  enabled:\n", ("refuse", "enabled-absent", None)),
+    ("empty-map", "autoscaling:\n  enabled: {}\n", ("refuse", "not-a-bool", "map")),
+    ("empty-list", "autoscaling:\n  enabled: []\n", ("refuse", "not-a-bool", "slice")),
+    # THE SAME DELETION ONE LEVEL UP.
+    ("autoscaling-null", "autoscaling:\n", ("refuse", "autoscaling-absent", None)),
+    # THE SHAPE `database.create` NEVER HAS TO HANDLE: `autoscaling` ITSELF written as
+    # a non-map scalar. Measured: helm's coalescing keeps the override outright (no
+    # warning), so `.Values.autoscaling` becomes the literal string "x" and
+    # `templates/scaledobject.yaml`'s unguarded two-level dot-chain used to crash on
+    # it before this row existed.
+    ("autoscaling-non-map", "autoscaling: x\n", ("refuse", "not-a-map", "string")),
+)
+
+# THE COUNTS, LITERALS, for the reason EXPECTED_SHAPES is one.
+EXPECTED_AUTOSCALING_SHAPES = 12
+EXPECTED_AUTOSCALING_SHAPES_REFUSED = 10
+EXPECTED_AUTOSCALING_SHAPES_RENDERED = 2
+# The ScaledObject counts of the two shapes that render, in order.
+EXPECTED_AUTOSCALING_RENDERED_INSTANCES = (0, 1)
+
 INVOCATION = re.compile(
     r'include\s+"%s\.require-api"\s+\(dict(?P<body>.*?)\)\s*\}\}' % re.escape(CHART_NAME),
     re.DOTALL,
@@ -1170,9 +1240,16 @@ def test_the_shape_refusal_does_not_quote_a_raise():
     assertion of the form `raise_text not in message` false-green forever, because
     the marker was then in both. Asserted over the TEMPLATE SOURCE, so the ban holds
     for every shape including ones nobody has written a row for yet.
+
+    COVERS BOTH TOGGLES' ARMS, `database.create`'s and `autoscaling.enabled`'s, over
+    the one file both live in — the RAISE_MARKERS scan is over the whole source, so a
+    marker introduced by either toggle's refusal, or by a comment quoting one, reddens
+    here regardless of which block it is in.
     """
     text = (CHART / "templates" / "render-checks.yaml").read_text()
     for arm, (phrase, _opening) in sorted(SHAPE_ARMS.items()):
+        assert phrase in text, f"the {arm} arm's message is not in the template: {phrase!r}"
+    for arm, (phrase, _opening) in sorted(AUTOSCALING_SHAPE_ARMS.items()):
         assert phrase in text, f"the {arm} arm's message is not in the template: {phrase!r}"
     for marker in RAISE_MARKERS:
         assert marker not in text, (
@@ -1180,3 +1257,200 @@ def test_the_shape_refusal_does_not_quote_a_raise():
             f"refusal is told apart from a raise — a refusal carrying it makes that "
             f"discrimination false-green"
         )
+
+
+# ── THE SHAPE OF THE SECOND TOGGLE, `autoscaling.enabled` (ADR-0850) ─────────
+
+
+def render_the_autoscaling_shape(chart: Path, body: str, destination: Path):
+    """One `autoscaling` shape rendered, NAMING KEDA's group.
+
+    Mirrors `render_the_shape`, over `AUTOSCALING_SHAPE_ARMS` / `KEDA_API_VERSIONS`
+    rather than `database.create`'s. Kept separate rather than parameterising the
+    original: the two toggles' arm counts differ (three against four) and a shared
+    function hides that difference behind a parameter nobody reads at the call site.
+    """
+    overlay = shape_overlay(body, destination)
+    return render(chart, "--values", str(overlay), *KEDA_API_VERSIONS)
+
+
+def examine_the_autoscaling_shapes(
+    chart: Path, destination: Path
+) -> tuple[list[str], int, int, list[int]]:
+    """Every shape in AUTOSCALING_SHAPES against `chart`: the disagreements, and what
+    was counted. Mirrors `examine_the_shapes`, counting `kind: ScaledObject` instead
+    of `kind: MariaDB`.
+    """
+    failures: list[str] = []
+    refused = 0
+    rendered_instances: list[int] = []
+
+    for label, body, expectation in AUTOSCALING_SHAPES:
+        result = render_the_autoscaling_shape(chart, body, destination / label)
+        instances = result.stdout.count("kind: ScaledObject")
+
+        if expectation[0] == "render":
+            wanted = expectation[1]
+            if result.returncode != 0:
+                failures.append(
+                    f"{label}: expected a render and helm exited {result.returncode}: "
+                    f"{result.stderr.strip()}"
+                )
+                continue
+            rendered_instances.append(instances)
+            if instances != wanted:
+                failures.append(
+                    f"{label}: rendered {instances} ScaledObject objects, expected {wanted}"
+                )
+            continue
+
+        _, arm, kind = expectation
+        phrase = AUTOSCALING_SHAPE_ARMS[arm][0]
+        if result.returncode == 0:
+            failures.append(
+                f"{label}: rendered {instances} ScaledObject objects and was NOT refused "
+                f"— the {arm} arm did not fire"
+            )
+            continue
+        refused += 1
+        if phrase not in result.stderr:
+            failures.append(
+                f"{label}: refused without the {arm} arm's message ({phrase!r}): "
+                f"{result.stderr.strip()}"
+            )
+        if CHART_NAME not in result.stderr:
+            failures.append(f"{label}: the refusal does not name {CHART_NAME}: {result.stderr.strip()}")
+        if kind is not None and kind not in result.stderr:
+            failures.append(
+                f"{label}: the refusal does not name the kind it found ({kind!r}), so it "
+                f"would read the same for every wrong shape: {result.stderr.strip()}"
+            )
+        for marker in RAISE_MARKERS:
+            if marker in result.stderr:
+                failures.append(
+                    f"{label}: helm RAISED rather than refusing — {marker!r} is in the "
+                    f"output, so the adopter got a template trace instead of a key name"
+                )
+
+    return failures, len(AUTOSCALING_SHAPES), refused, rendered_instances
+
+
+def test_the_autoscaling_shape_harness_measures_what_it_claims_to(tmp_path):
+    """THE TRIPWIRE, mirroring `test_the_shape_harness_measures_what_it_claims_to`."""
+    reaching = render_the_autoscaling_shape(
+        CHART, "autoscaling:\n  enabled: true\n", tmp_path / "reaching"
+    )
+    assert reaching.returncode == 0, reaching.stderr
+    assert reaching.stdout.count("kind: ScaledObject") == 1, (
+        "an overlay setting `autoscaling.enabled: true` rendered no ScaledObject, so "
+        "it did not reach the key and no row of the table below measures anything"
+    )
+
+    refusing = render_the_autoscaling_shape(
+        CHART, 'autoscaling:\n  enabled: "false"\n', tmp_path / "refusing"
+    )
+    assert refusing.returncode != 0, refusing.stdout
+    assert AUTOSCALING_SHAPE_ARMS["not-a-bool"][0] in refusing.stderr, refusing.stderr
+
+
+def test_every_writable_shape_of_autoscaling_enabled_is_a_bool_or_refused(tmp_path):
+    """M1 for the second toggle. Twelve shapes: ten refused, two rendered (0 and 1)."""
+    failures, examined, refused, rendered_instances = examine_the_autoscaling_shapes(
+        CHART, tmp_path
+    )
+
+    assert examined == EXPECTED_AUTOSCALING_SHAPES, (
+        f"examined {examined} shapes, expected {EXPECTED_AUTOSCALING_SHAPES}"
+    )
+    assert failures == [], "\n".join(failures)
+    assert refused == EXPECTED_AUTOSCALING_SHAPES_REFUSED, (
+        f"examined {examined} shapes: {refused} refused, expected "
+        f"{EXPECTED_AUTOSCALING_SHAPES_REFUSED}"
+    )
+    assert len(rendered_instances) == EXPECTED_AUTOSCALING_SHAPES_RENDERED, rendered_instances
+    assert tuple(rendered_instances) == EXPECTED_AUTOSCALING_RENDERED_INSTANCES, (
+        f"the shapes that render produced {tuple(rendered_instances)} ScaledObject "
+        f"objects, expected {EXPECTED_AUTOSCALING_RENDERED_INSTANCES}"
+    )
+
+
+def test_stripping_an_autoscaling_arm_reddens_the_shapes_it_owns(tmp_path):
+    """Mirrors `test_stripping_an_arm_of_the_refusal_reddens_the_shapes_it_owns`,
+    run once per arm of `AUTOSCALING_SHAPE_ARMS` (four, not three)."""
+    exercised = 0
+    for arm, (phrase, opening) in sorted(AUTOSCALING_SHAPE_ARMS.items()):
+        copy = tmp_path / arm / "chart"
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(CHART, copy)
+        template = copy / "templates" / "render-checks.yaml"
+        template.write_text(strip_arm(template.read_text(), opening))
+
+        failures, examined, _, _ = examine_the_autoscaling_shapes(copy, tmp_path / arm / "renders")
+        assert examined == EXPECTED_AUTOSCALING_SHAPES, examined
+        assert failures, (
+            f"the {arm} arm was stripped from the template and the table said nothing"
+        )
+
+        owned = [
+            label
+            for label, _body, expectation in AUTOSCALING_SHAPES
+            if expectation[0] == "refuse" and expectation[1] == arm
+        ]
+        assert owned, f"no shape in AUTOSCALING_SHAPES exercises the {arm} arm, so it is unfalsifiable"
+        for label in owned:
+            assert any(failure.startswith(f"{label}:") for failure in failures), (
+                f"the {arm} arm was stripped and {label} still passed: {failures}"
+            )
+        exercised += 1
+
+    assert exercised == len(AUTOSCALING_SHAPE_ARMS), (
+        f"examined {exercised} arms of the refusal, expected {len(AUTOSCALING_SHAPE_ARMS)}"
+    )
+
+
+def test_stripping_the_autoscaling_kind_test_puts_the_wrong_ones_back(tmp_path):
+    """Mirrors `test_stripping_the_kind_test_puts_the_four_wrong_on_shapes_back`: with
+    `kindIs "bool"` gone, the truthy non-bool shapes render a ScaledObject again.
+    """
+    copy = tmp_path / "chart"
+    shutil.copytree(CHART, copy)
+    template = copy / "templates" / "render-checks.yaml"
+    template.write_text(strip_arm(template.read_text(), AUTOSCALING_SHAPE_ARMS["not-a-bool"][1]))
+
+    wrong_on = ("string-false", "string-no", "string-true", "number-one")
+    bodies = {label: body for label, body, _ in AUTOSCALING_SHAPES}
+    for label in wrong_on:
+        result = render_the_autoscaling_shape(copy, bodies[label], tmp_path / "renders" / label)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count("kind: ScaledObject") == 1, (
+            f"{label} did not render a ScaledObject with the kind test stripped, so "
+            f"this construction does not reproduce the fail-open it is named for"
+        )
+
+    failures, examined, _, _ = examine_the_autoscaling_shapes(copy, tmp_path / "table")
+    assert examined == EXPECTED_AUTOSCALING_SHAPES, examined
+    assert failures and failures[0].startswith("string-false:"), (
+        f"the table must redden naming `\"false\"` first — the shape an adopter is "
+        f"most likely to have written: {failures}"
+    )
+
+
+def test_stripping_the_autoscaling_map_test_lets_the_non_map_shape_through(tmp_path):
+    """THE ARM `database.create` NEVER NEEDED, exercised the same way.
+
+    With the `not-a-map` arm gone, `autoscaling: x` reaches the KEDA capability check
+    at bare truthiness on a non-map value — which, measured, raises a Go template
+    error rather than refusing cleanly, the exact crash `templates/scaledobject.yaml`'s
+    own guard exists to pre-empt. Asserted here on the render-checks side: the shape
+    stops being a clean refusal once this arm is gone.
+    """
+    copy = tmp_path / "chart"
+    shutil.copytree(CHART, copy)
+    template = copy / "templates" / "render-checks.yaml"
+    template.write_text(strip_arm(template.read_text(), AUTOSCALING_SHAPE_ARMS["not-a-map"][1]))
+
+    result = render_the_autoscaling_shape(copy, "autoscaling: x\n", tmp_path / "renders")
+    assert AUTOSCALING_SHAPE_ARMS["not-a-map"][0] not in result.stderr, (
+        "the not-a-map arm was stripped and its message still appeared — this "
+        "construction does not reproduce the gap it is named for"
+    )
