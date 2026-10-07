@@ -288,8 +288,9 @@ who hits it mid-rollout knows it is not a defect.
 {{- if ne .Values.tls.clientAuth "off" }}
 {{- fail (printf (join "" (list
       "project-db: tls.clientAuth is %q; this chart version renders the key but the binary "
-      "does not enforce mutual TLS yet (ledger 1278, B-U5 lands the contract). Set "
-      "tls.clientAuth: off, or omit the key, until then."))
+      "does not enforce mutual TLS yet (ledger 1278, B-U5 lands the contract). Write "
+      "tls.clientAuth: \"off\" (quoted — YAML reads a bare off as false), or omit the key, "
+      "until then."))
       .Values.tls.clientAuth) }}
 {{- end }}
 {{- end }}

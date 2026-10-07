@@ -1530,37 +1530,15 @@ def test_tls_enabled_false_renders_the_variable_too_rather_than_omitting_it():
     assert "LISTEN_TLS_CERT_FILE" not in result.stdout
 
 
-def test_head_renders_the_same_documents_as_origin_main_with_tls_enabled(tmp_path):
-    """ADR-0845's neutrality contract (K-1): with `tls.enabled` set explicitly
-    and the same image ref, HEAD's render must equal origin/main's.
-
-    COMPARED AS PARSED DOCUMENTS, not bytes: this PR rewrote the prose
-    comments immediately around the env var it moved off `{{- if }}` onto an
-    unconditional `ternary`, so a byte diff would fail on comment text that
-    carries no behaviour. `--set tls.enabled=true` on both sides is the
-    "explicit values" the card asks for; origin/main's chart is fetched into
-    `tmp_path` fresh rather than read from a possibly-stale local clone.
-    """
-    main_root = tmp_path / "origin-main"
-    main_root.mkdir()
-    fetch = subprocess.run(["git", "fetch", "origin", "main"], cwd=REPO, capture_output=True, text=True)
-    assert fetch.returncode == 0, fetch.stderr
-    archive = subprocess.run(
-        ["git", "archive", "origin/main", "--", "chart"], cwd=REPO, capture_output=True
-    )
-    assert archive.returncode == 0, archive.stderr
-    tar = subprocess.run(["tar", "-x"], input=archive.stdout, cwd=main_root)
-    assert tar.returncode == 0
-
-    head = render(CHART, "--set", "tls.enabled=true")
-    main = render(main_root / "chart", "--set", "tls.enabled=true")
-    assert head.returncode == 0, head.stderr
-    assert main.returncode == 0, main.stderr
-    assert list(yaml.safe_load_all(head.stdout)) == list(yaml.safe_load_all(main.stdout)), (
-        "HEAD's render (tls.enabled=true) must parse to the same documents as "
-        "origin/main's"
-    )
-
+# NOTE: a golden test comparing HEAD's render against a live `git fetch
+# origin main` + `git archive` of the parent repo (coordinator-removed,
+# re-review on project-db#54) used to live here. Deleted by coordinator
+# ruling: it reached across the network/VCS for a comparison this file's
+# other render-level tests already cover more directly (the unconditional
+# `ternary` shape is asserted by `test_tls_enabled_true_renders_the_variable_
+# unconditionally` and `test_tls_enabled_false_renders_the_variable_too_
+# rather_than_omitting_it` above), without that test's dependency on network
+# access or a same-moment `origin/main`.
 
 # ── B-U5E (folded into C-DB1): the `tls.clientAuth` expand ──────────────────
 #
@@ -1701,3 +1679,25 @@ def test_client_ca_secret_alone_with_no_client_auth_mounts_nothing(tmp_path):
     assert "LISTEN_TLS_CLIENT_CA_FILE" not in result.stdout
     assert "client-ca" not in result.stdout
     assert "proj-client-ca" not in result.stdout
+
+
+def test_client_ca_secret_empty_string_mounts_nothing_even_with_client_auth_present(
+    tmp_path,
+):
+    """THE OTHER HALF OF CASE A (coordinator re-review, project-db#54): the
+    three gates read `.Values.tls.clientCaSecret` for its TRUTHINESS, not
+    with `hasKey` — Helm renders an unset chart value as `""`, and `""` is
+    falsy in a Go template `if`. A mutation that swapped the truthiness
+    read for `hasKey .Values.tls "clientCaSecret"` would still see this key
+    PRESENT and mount an empty `secretName: ""`, which the previous case-A
+    test (clientCaSecret entirely ABSENT) cannot catch — `hasKey` answers
+    the same `false` as truthiness does when the key is missing, so only an
+    explicit empty STRING falsifies `hasKey` without falsifying truthiness.
+    """
+    overlay = tmp_path / "ca-empty-string.yaml"
+    overlay.write_text('tls: {enabled: true, clientAuth: "off", clientCaSecret: ""}\n')
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode == 0, result.stderr
+    assert "LISTEN_TLS_CLIENT_CA_FILE" not in result.stdout
+    assert "client-ca" not in result.stdout
+    assert 'secretName: ""' not in result.stdout

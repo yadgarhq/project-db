@@ -372,6 +372,12 @@ fn only_exactly_one_enables_the_listeners_tls_and_every_other_spelling_refuses()
             "{value:?}: {err}"
         );
         assert!(err.to_string().contains(value), "{value:?}: {err}");
+        // THE CHART KEY, NOT ONLY THE VALUE (coordinator re-review,
+        // project-db#54): a mutation that dropped "The chart renders it as
+        // tls.enabled." from `TlsEnabledInvalid`'s message would still pass
+        // the assertion above, naming the bad value but not where an
+        // operator fixes it.
+        assert!(err.to_string().contains("tls.enabled"), "{value:?}: {err}");
     }
 }
 
