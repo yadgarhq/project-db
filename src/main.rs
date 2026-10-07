@@ -215,12 +215,12 @@ async fn serve(
     // installs one picks the backend for every service linking it. A failure here
     // is logged and ignored: a service that cannot export metrics should still
     // serve traffic, which is D25's rule applied to the metrics path too.
-    // NAMED ON FAILURE (ledger 1257): a bare `?` here turns a bad address
-    // into an `AddrParseError` that says "invalid socket address syntax" and
-    // nothing about which variable produced it.
-    let metrics_addr: SocketAddr = env_required("METRICS_LISTEN")?
-        .parse()
-        .map_err(|e| format!("METRICS_LISTEN is not a usable socket address: {e}."))?;
+    // NAMED ON FAILURE (ledger 1257), through `boot::parse_listen_addr` —
+    // the one function `src/boot/tests.rs` can prove the naming survives, a
+    // bare `?` here turning the address into an unnamed `AddrParseError`
+    // could not be.
+    let metrics_addr: SocketAddr =
+        boot::parse_listen_addr("METRICS_LISTEN", &env_required("METRICS_LISTEN")?)?;
     if let Err(e) = yadgar_telemetry::metrics::install_prometheus(metrics_addr) {
         tracing::warn!(error = %e, "metrics endpoint unavailable; continuing without it");
     }
@@ -231,10 +231,8 @@ async fn serve(
     // shows the loaded leaf ageing out.
     tls_inputs.export_not_after();
 
-    // NAMED ON FAILURE, same reason as `METRICS_LISTEN` above.
-    let addr: SocketAddr = env_required("LISTEN")?
-        .parse()
-        .map_err(|e| format!("LISTEN is not a usable socket address: {e}."))?;
+    // NAMED ON FAILURE, same reason and same function as `METRICS_LISTEN` above.
+    let addr: SocketAddr = boot::parse_listen_addr("LISTEN", &env_required("LISTEN")?)?;
 
     // ARMED BEFORE THE SERVER IS SPAWNED, and that ordering is the fix rather
     // than an accident of where the line sits. `boot::shutdown` is a `fn`

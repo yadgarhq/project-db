@@ -361,11 +361,14 @@ spec:
             - name: serving-cert
               mountPath: /var/run/config/serving-cert
               readOnly: true
-            {{- if .Values.tls.clientCaSecret }}
+            {{- if and .Values.tls.enabled (hasKey .Values.tls "clientAuth") .Values.tls.clientCaSecret }}
             # B-U5E (folded into C-DB1): the `ca.crt` item, mounted only when
-            # `tls.clientCaSecret` is named. A directory mount, same reason as
-            # `engine-ca` and `serving-cert` above: a rotated authority must
-            # reach a running pod without a restart.
+            # `tls.clientCaSecret` is named AND `tls.clientAuth` is present —
+            # the same three-part condition the env var above renders under.
+            # `tls.enabled` alone with `clientCaSecret` set and no
+            # `clientAuth` must mount NOTHING (coordinator review,
+            # project-db#54): a CA with no client-auth mode to pair it with
+            # is a Secret this pod would mount and never read.
             - name: client-ca
               mountPath: /var/run/config/client-ca
               readOnly: true
@@ -568,13 +571,16 @@ spec:
                 path: tls.crt
               - key: {{ required "tls.keySecretKey names the key inside tls.certSecret that holds the private key and must be set whenever tls.enabled is; see the chart's values.yaml" .Values.tls.keySecretKey | quote }}
                 path: tls.key
-        {{- if .Values.tls.clientCaSecret }}
+        {{- if and .Values.tls.enabled (hasKey .Values.tls "clientAuth") .Values.tls.clientCaSecret }}
         # B-U5E (folded into C-DB1): the authority a future `required` mode
         # checks a CALLER's certificate against. Required rather than optional
         # — same argument as `engine-ca` above, not `serving-cert`'s: nothing
         # in this binary opens this file yet (B-U5 is what will), so there is
         # no refusal downstream to defer to; a FailedMount naming this Secret
-        # is the only error there would be.
+        # is the only error there would be. Gated on the SAME three-part
+        # condition as the mount and the env var: `tls.enabled`,
+        # `clientAuth` present, and `clientCaSecret` truthy — none alone is
+        # enough (coordinator review, project-db#54).
         - name: client-ca
           secret:
             secretName: {{ .Values.tls.clientCaSecret }}

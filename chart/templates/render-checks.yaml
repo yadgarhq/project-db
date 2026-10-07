@@ -277,12 +277,13 @@ who hits it mid-rollout knows it is not a defect.
 {{- if and (kindIs "map" .Values.tls) (hasKey .Values.tls "clientAuth") }}
 {{- if not (kindIs "string" .Values.tls.clientAuth) }}
 {{- fail (printf (join "" (list
-      "project-db: tls.clientAuth must be a string (off, optional or required) and is %s "
-      "(%s)."))
+      "project-db: tls.clientAuth must be a quoted string (\"off\", \"optional\" or "
+      "\"required\") and is %s (%s). YAML reads a bare off as false: write "
+      "clientAuth: \"off\"."))
       (kindOf .Values.tls.clientAuth) (toJson .Values.tls.clientAuth)) }}
 {{- end }}
 {{- if not (has .Values.tls.clientAuth (list "off" "optional" "required")) }}
-{{- fail (printf "project-db: tls.clientAuth is %q, which is not off, optional or required." .Values.tls.clientAuth) }}
+{{- fail (printf "project-db: tls.clientAuth is %q; it must be off, optional or required." .Values.tls.clientAuth) }}
 {{- end }}
 {{- if ne .Values.tls.clientAuth "off" }}
 {{- fail (printf (join "" (list

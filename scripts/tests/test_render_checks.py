@@ -1591,7 +1591,53 @@ def test_client_auth_bad_mode_refuses(tmp_path):
     overlay.write_text("tls: {enabled: true, clientAuth: bogus}\n")
     result = render(CHART, "--values", str(overlay))
     assert result.returncode != 0
-    assert 'tls.clientAuth is "bogus", which is not off, optional or required.' in result.stderr
+    assert 'tls.clientAuth is "bogus"; it must be off, optional or required.' in result.stderr
+
+
+# THE EXACT SENTENCE a non-string `tls.clientAuth` refuses with (coordinator
+# review, project-db#54, B-U5E-convention.md item 2). Asserted whole, same
+# discipline as TLS_ENABLED_GUARD_SENTENCE above.
+CLIENT_AUTH_NOT_A_STRING_SENTENCE_PREFIX = (
+    'project-db: tls.clientAuth must be a quoted string ("off", "optional" or '
+    '"required") and is bool (false). YAML reads a bare off as false: write '
+    'clientAuth: "off".'
+)
+
+
+def test_unquoted_off_from_a_values_file_refuses_naming_the_yaml_gotcha(tmp_path):
+    """THE SHAPE A VALUES FILE, NOT `--set`, ACTUALLY WRITES. YAML 1.1 reads a
+    bare `off` as the boolean `false`; `--set tls.clientAuth=off` keeps it a
+    STRING (helm's `--set` grammar has no boolean literals), so a test built
+    on `--set` could not reach this arm at all — it has to be a `-f` values
+    file, which is what an adopter actually hand-writes.
+    """
+    overlay = tmp_path / "unquoted-off.yaml"
+    overlay.write_text("tls: {enabled: true, clientAuth: off}\n")
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode != 0, "an unquoted `off` must refuse, not render as false"
+    assert CLIENT_AUTH_NOT_A_STRING_SENTENCE_PREFIX in result.stderr, result.stderr
+
+
+def test_dropping_the_client_auth_kindis_guard_loses_its_sentence(tmp_path):
+    """The mutation: strip the `kindIs "string"` arm and the SAME unquoted
+    `off` overlay must stop producing this sentence — proving the test above
+    actually depends on the guard, not on the enum check below it (which
+    would still refuse a bare `false`, by a different and less useful
+    sentence, even with this arm gone).
+    """
+    copy_dir = tmp_path / "chart"
+    shutil.copytree(CHART, copy_dir)
+    template = copy_dir / "templates" / "render-checks.yaml"
+    opening = '{{- if not (kindIs "string" .Values.tls.clientAuth) }}'
+    template.write_text(strip_arm(template.read_text(), opening))
+
+    overlay = tmp_path / "unquoted-off.yaml"
+    overlay.write_text("tls: {enabled: true, clientAuth: off}\n")
+    result = render(copy_dir, "--values", str(overlay))
+    assert CLIENT_AUTH_NOT_A_STRING_SENTENCE_PREFIX not in result.stderr, (
+        "the kindIs guard was stripped and its sentence still appeared: "
+        f"{result.stderr}"
+    )
 
 
 def test_client_auth_optional_and_required_both_refuse_with_the_not_enforced_yet_sentence(
@@ -1635,3 +1681,23 @@ def test_client_ca_secret_renders_its_env_and_item_only_when_named(tmp_path):
     assert "value: /var/run/config/client-ca/ca.crt" in result.stdout
     assert "name: client-ca" in result.stdout
     assert "secretName: proj-client-ca" in result.stdout
+
+
+def test_client_ca_secret_alone_with_no_client_auth_mounts_nothing(tmp_path):
+    """CASE A (coordinator review, project-db#54): `tls.enabled: true` and
+    `tls.clientCaSecret` set, but `tls.clientAuth` ABSENT, must render no CA
+    env, mount or volume at all — a CA Secret with no client-auth mode to
+    pair it with is one this pod would mount and never read. Before the
+    fix, the mount and the volume checked only `tls.clientCaSecret`, so this
+    shape mounted a Secret the env block (gated on `clientAuth` too) never
+    told the binary about.
+    """
+    overlay = tmp_path / "ca-no-client-auth.yaml"
+    overlay.write_text(
+        "tls: {enabled: true, clientCaSecret: proj-client-ca, clientCaSecretKey: ca.crt}\n"
+    )
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode == 0, result.stderr
+    assert "LISTEN_TLS_CLIENT_CA_FILE" not in result.stdout
+    assert "client-ca" not in result.stdout
+    assert "proj-client-ca" not in result.stdout

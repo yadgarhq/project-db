@@ -521,3 +521,28 @@ fn an_unparseable_numeric_knob_names_itself_the_value_and_the_chart_key() {
         assert!(message.contains("not-a-number"), "{key}: {message}");
     }
 }
+
+/// `LISTEN` AND `METRICS_LISTEN` NAME THEMSELVES ON A BAD ADDRESS (ledger
+/// 1257, coordinator review on project-db#54). `main.rs` cannot be
+/// unit-tested, so this is the one place a mutation that deletes
+/// `boot::parse_listen_addr`'s `map_err` — reverting to a bare `?` that
+/// hands back an unnamed `AddrParseError` — turns red.
+#[test]
+fn an_unparseable_listen_address_names_the_variable() {
+    for key in ["LISTEN", "METRICS_LISTEN"] {
+        let message = parse_listen_addr(key, "notanaddr").unwrap_err();
+        assert!(message.contains(key), "{key}: {message}");
+        assert!(
+            message.contains("not a usable socket address"),
+            "{key}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_usable_listen_address_parses_to_the_socket_addr_it_names() {
+    assert_eq!(
+        parse_listen_addr("LISTEN", "127.0.0.1:50051").unwrap(),
+        "127.0.0.1:50051".parse().unwrap()
+    );
+}

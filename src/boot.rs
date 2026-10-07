@@ -139,6 +139,27 @@ where
     })
 }
 
+/// Parse `LISTEN` or `METRICS_LISTEN`, naming the variable on failure.
+///
+/// LIVES HERE RATHER THAN IN `main.rs` (ledger 1257, coordinator review on
+/// project-db#54), for this module's own founding reason: "nothing in a
+/// binary entry point is reachable from a test." `main.rs` used to wrap
+/// `.parse()` in its own inline `map_err` at each of the two call sites —
+/// correct, but untested, because `main` cannot be unit-tested and the
+/// mutation that deletes one `map_err` compiles and passes every suite
+/// here. One function, called from both sites, is one thing `src/boot/
+/// tests.rs` can prove the naming survives.
+///
+/// Neither `LISTEN` nor `METRICS_LISTEN` has a chart key to name: both are
+/// hardcoded literals in `templates/deployment.yaml` (`"0.0.0.0:50051"`,
+/// `"0.0.0.0:9090"`), never read from a `values.yaml` key — unlike every
+/// knob in [`pool_config`], there is nowhere else to point an operator.
+pub fn parse_listen_addr(key: &'static str, value: &str) -> Result<std::net::SocketAddr, String> {
+    value
+        .parse()
+        .map_err(|e| format!("{key} is not a usable socket address: {e}."))
+}
+
 /// `REPLICAS`'s chart key is two keys, not one: `templates/deployment.yaml`
 /// renders `autoscaling.maxReplicas` instead of `replicaCount` whenever
 /// `autoscaling.enabled` is true. A refusal naming only `replicaCount` would
