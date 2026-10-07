@@ -282,12 +282,20 @@ def test_dropping_tls_required_on_disk_degrades_the_bare_lint_message(tmp_path) 
     Correction #1 names it precisely: `templates/render-checks.yaml`'s own
     `fail` is invisible to `helm lint --strict` as an ERROR — the harness
     below shows it demoted to an `[INFO] Fail: …` line the lint output does
-    not fail on — so with the schema intact, the operator reads the schema's
-    clean `missing property 'enabled'` sentence; with `required` deleted on
-    disk, the SAME bare lint still exits non-zero, but now on sprig's raw
-    `wrong type for value; expected bool; got interface {}`, which names no
-    chart key at all. Dropping `required` is a real regression, measured as
-    a WORSE message on a lint that was already red, not as a green one.
+    not fail on — so with the schema intact, the operator reads the
+    SCHEMA's own sentence naming the leaf; with `required` deleted on disk,
+    the SAME bare lint still exits non-zero, but now on sprig's raw
+    `wrong type for value`, which names no chart key at all. Dropping
+    `required` is a real regression, measured as a WORSE message on a lint
+    that was already red, not as a green one.
+
+    ASSERTED ON THE WRAPPER SENTENCE ("values don't meet the specifications
+    of the schema(s)"), NEVER ON HELM'S OWN PER-LEAF WORDING — measured to
+    differ by version: helm 4.3.0 prints "missing property 'enabled'", helm
+    3.18.4 prints "tls: enabled is required". Both carry the wrapper
+    sentence this file's own module docstring already warns about (ADR-0650
+    §"RED CASES ASSERT... NEVER HELM'S OWN SENTENCE"), which is the mistake
+    an earlier revision of this test made and CI on 3.18.4 caught.
     """
     import shutil
 
@@ -305,13 +313,14 @@ def test_dropping_tls_required_on_disk_degrades_the_bare_lint_message(tmp_path) 
 
     assert before.returncode != 0, "the unmutated chart's bare lint must already refuse"
     assert after.returncode != 0, "dropping `required` must not turn the bare lint green"
-    assert "missing property" in before.stdout + before.stderr, (
-        "the unmutated chart must report the schema's own clean sentence: "
+    schema_wrapper = "values don't meet the specifications of the schema"
+    assert schema_wrapper in before.stdout + before.stderr, (
+        "the unmutated chart must report the schema's own validation wrapper: "
         f"{before.stdout}{before.stderr}"
     )
-    assert "missing property" not in after.stdout + after.stderr, (
-        "dropping `required` on disk should have lost the schema's clean sentence: "
-        f"{after.stdout}{after.stderr}"
+    assert schema_wrapper not in after.stdout + after.stderr, (
+        "dropping `required` on disk should have lost the schema's validation "
+        f"wrapper, leaving only the template's own crash: {after.stdout}{after.stderr}"
     )
 
 
