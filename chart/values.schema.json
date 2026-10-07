@@ -1,20 +1,122 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "values",
-  "$comment": "DELIBERATELY OPEN: this schema bounds ONE knob, database.migrationLockTimeoutSeconds (ledger 814, ADR-0837), and constrains nothing else, so every other value stays exactly as unvalidated as it was. A closed schema covering the whole chart is ledger 990's job, not this one's. `required` on database makes an explicit null of the knob a RENDER-time refusal naming the key. NO root `required: [database]`: the chart's own render check already refuses a nulled `database` with its own sentence (`database` is absent from the values), and a schema refusal would pre-empt it with a less specific one, measured by scripts/tests/test_render_checks.py. leaving the key out of an override is not a null, because helm deep-merges over chart/values.yaml and inherits the shipped value. THIS FILE IS THE ONE SOURCE OF THE BOUND; the binary refuses only what can never be a wait, and chart/values.yaml beside the value carries the arithmetic.",
-  "type": "object",
+  "title": "yadgar/project-db",
+  "$comment": "Closure is per chart (ADR-0850): this file closes only project-db's own key set, at root and in every block it declares; it bounds no other chart. OPEN (untyped {} maps, any shape passes): `global`, the one key the parent forwards into every module; `resources` and `database.instance.resources`, handed to `toYaml` for the pod's and the engine's own resource shape; `rollingUpdate`, handed to `with` for the Deployment's own strategy shape. EXTRAS (a template reads these, `values.yaml` does not declare them, so they are listed as leaves inside their closed block rather than left open): `image.digest`, read by `templates/deployment.yaml` and rewritten with the released digest by ci-release at package time (D65); `networkPolicy.scrapeFrom.namespace`, read by `templates/networkpolicy.yaml` (`values.yaml` ships `scrapeFrom: {}`, so without this extra the whole block would stay an open map). TYPES, TOGGLES AND `required` ARE A RENDER CHECK'S JOB (ADR-0847), not this file's: `templates/render-checks.yaml` already refuses a non-bool `autoscaling.enabled`, a non-bool `database.create` and a non-map `autoscaling`, by name, and this schema adds nothing on top of those checks. The one exception is `database.migrationLockTimeoutSeconds` (ledger 814, ADR-0837): it keeps its `type: integer, minimum 1, maximum 590`, and `database` keeps `type: object` and `required: [migrationLockTimeoutSeconds]` — both shipped before ledger 990 and unrelated to it. NO `required` is added for `tls.enabled` here: that lands in C-DB1 (ADR-0845, ADR-0857/K-8), never in this unit.",
   "properties": {
-    "database": {
-      "type": "object",
+    "image": {
       "properties": {
+        "repository": {},
+        "tag": {},
+        "digest": {}
+      },
+      "additionalProperties": false
+    },
+    "replicaCount": {},
+    "resources": {},
+    "database": {
+      "properties": {
+        "host": {},
+        "port": {},
+        "name": {},
+        "user": {},
+        "passwordSecret": {},
+        "sslMode": {},
+        "sslCaSecret": {},
+        "sslCaSecretKey": {},
+        "maxConnections": {},
+        "engineMaxConnections": {},
         "migrationLockTimeoutSeconds": {
           "type": "integer",
           "minimum": 1,
           "maximum": 590,
           "description": "Seconds a replica waits for another one's migration before failing its boot. Rendered as DB_MIGRATION_LOCK_TIMEOUT_SECONDS and read with no fallback. Minimum 1: GET_LOCK with 0 never waits and with a negative wait never takes the lock. Maximum 590: see chart/values.yaml."
+        },
+        "create": {},
+        "mariadbOperator": {
+          "properties": {
+            "apiVersion": {}
+          },
+          "additionalProperties": false
+        },
+        "instance": {
+          "properties": {
+            "image": {},
+            "replicas": {},
+            "tls": {
+              "properties": {
+                "enabled": {},
+                "required": {}
+              },
+              "additionalProperties": false
+            },
+            "storage": {
+              "properties": {
+                "size": {},
+                "className": {}
+              },
+              "additionalProperties": false
+            },
+            "rootPasswordSecret": {},
+            "resources": {}
+          },
+          "additionalProperties": false
         }
       },
+      "additionalProperties": false,
+      "type": "object",
       "required": ["migrationLockTimeoutSeconds"]
-    }
-  }
+    },
+    "tls": {
+      "properties": {
+        "enabled": {},
+        "certSecret": {},
+        "certSecretKey": {},
+        "keySecretKey": {}
+      },
+      "additionalProperties": false
+    },
+    "autoscaling": {
+      "properties": {
+        "enabled": {},
+        "kedaOperator": {
+          "properties": {
+            "apiVersion": {}
+          },
+          "additionalProperties": false
+        },
+        "minReplicas": {},
+        "maxReplicas": {},
+        "threshold": {},
+        "prometheusAddress": {}
+      },
+      "additionalProperties": false
+    },
+    "preStopSleepSeconds": {},
+    "terminationGracePeriodSeconds": {},
+    "rollingUpdate": {},
+    "topologySpread": {
+      "properties": {
+        "enabled": {},
+        "maxSkew": {},
+        "topologyKey": {},
+        "whenUnsatisfiable": {}
+      },
+      "additionalProperties": false
+    },
+    "networkPolicy": {
+      "properties": {
+        "enabled": {},
+        "clients": {},
+        "scrapeFrom": {
+          "properties": {
+            "namespace": {}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "global": {}
+  },
+  "additionalProperties": false
 }
