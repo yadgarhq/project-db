@@ -32,23 +32,15 @@
 //! a key it never had would be a deprecation notice for a history it does not
 //! have.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use sqlx::mysql::MySqlConnectOptions;
-use tonic::transport::{Identity, Server, ServerTlsConfig};
 use yadgar_store::credentials::Secret;
 // NO `DEFAULT_SSL_MODE`. It was the fallback `pool_config` handed
 // `parse_ssl_mode` when DB_SSL_MODE was unset, and under ADR-0569 there is no
 // such position to hand anything to. The constant still exists in
 // `yadgar-store` and this module is simply no longer one of its readers.
 use yadgar_store::pool::{parse_ssl_mode, PoolConfig, PoolError};
-// THE ONE ERROR-CHAIN FLATTENER FOR THE ESTATE (ADR-0591). The body that used to
-// sit below `shutdown` in this file was one of five — `iam`, `iam-db`, `task`,
-// `task-db` and here — byte-identical apart from local names, under TWO names:
-// `chain` in the first two and `describe` in the other three. It is deleted
-// rather than left beside the shared one, because a consolidation that adds a
-// sixth copy without removing the five is worse than none.
-use yadgar_telemetry::diagnose::chain;
 
 /// The key selecting how TLS is negotiated to the engine.
 const SSL_MODE_KEY: &str = "DB_SSL_MODE";
@@ -111,6 +103,50 @@ fn env_required(env: &impl Fn(&str) -> Option<String>, key: &str) -> Result<Stri
     }
 }
 
+/// [`env_required`], with the chart key appended to whichever sentence it
+/// chose (absent or set-but-empty).
+///
+/// ADR-0569 asks a refusal to name the knob AND where it is set. Before this,
+/// every refusal here ended in the generic "The chart renders it." — true,
+/// but not where. `boot::lock::migration_lock` already appends the chart key
+/// this way; this is that same shape made available to every knob in
+/// [`pool_config`] rather than one.
+fn env_required_chart(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    chart_key: &str,
+) -> Result<String, BootError> {
+    env_required(env, key).map_err(|sentence| {
+        BootError::MissingKnob(format!("{sentence} Set the chart value {chart_key}."))
+    })
+}
+
+/// A value read by [`env_required_chart`], then parsed as a whole number.
+///
+/// REPLACES THE BARE `?` ON `.parse()`, which used to reach
+/// [`BootError::Int`] — a `ParseIntError` naming no variable and no chart
+/// key, so an operator reading a crash loop learned only that SOME number
+/// was unreadable (ledger 1257).
+fn parse_knob<T>(raw: String, key: &'static str, chart_key: &'static str) -> Result<T, BootError>
+where
+    T: std::str::FromStr<Err = std::num::ParseIntError>,
+{
+    raw.parse().map_err(|source| BootError::Unparsable {
+        key,
+        chart_key,
+        value: raw,
+        source,
+    })
+}
+
+/// `REPLICAS`'s chart key is two keys, not one: `templates/deployment.yaml`
+/// renders `autoscaling.maxReplicas` instead of `replicaCount` whenever
+/// `autoscaling.enabled` is true. A refusal naming only `replicaCount` would
+/// send an operator who has autoscaling on looking at a key the template
+/// never read.
+const REPLICAS_CHART_KEY: &str = "replicaCount (or autoscaling.maxReplicas when \
+     autoscaling.enabled is true)";
+
 /// Read the pool configuration, refusing rather than guessing.
 ///
 /// Takes the environment as a lookup rather than reading it directly, so a test
@@ -124,24 +160,34 @@ pub fn pool_config(env: impl Fn(&str) -> Option<String>) -> Result<PoolConfig, B
     // read it, so the refusal joins the enum as one more sentence instead of
     // becoming a second error type beside it.
     Ok(PoolConfig {
-        host: env_required(&env, "DB_HOST").map_err(BootError::MissingKnob)?,
-        port: env_required(&env, "DB_PORT")
-            .map_err(BootError::MissingKnob)?
-            .parse()?,
-        database: env_required(&env, "DB_NAME").map_err(BootError::MissingKnob)?,
-        username: env_required(&env, "DB_USER").map_err(BootError::MissingKnob)?,
-        max_connections: env_required(&env, "DB_MAX_CONNECTIONS")
-            .map_err(BootError::MissingKnob)?
-            .parse()?,
-        replicas: env_required(&env, "REPLICAS")
-            .map_err(BootError::MissingKnob)?
-            .parse()?,
-        engine_max_connections: env_required(&env, "DB_ENGINE_MAX_CONNECTIONS")
-            .map_err(BootError::MissingKnob)?
-            .parse()?,
-        ssl_mode: parse_ssl_mode(
-            &env_required(&env, SSL_MODE_KEY).map_err(BootError::MissingKnob)?,
+        host: env_required_chart(&env, "DB_HOST", "database.host")?,
+        port: parse_knob(
+            env_required_chart(&env, "DB_PORT", "database.port")?,
+            "DB_PORT",
+            "database.port",
         )?,
+        database: env_required_chart(&env, "DB_NAME", "database.name")?,
+        username: env_required_chart(&env, "DB_USER", "database.user")?,
+        max_connections: parse_knob(
+            env_required_chart(&env, "DB_MAX_CONNECTIONS", "database.maxConnections")?,
+            "DB_MAX_CONNECTIONS",
+            "database.maxConnections",
+        )?,
+        replicas: parse_knob(
+            env_required_chart(&env, "REPLICAS", REPLICAS_CHART_KEY)?,
+            "REPLICAS",
+            REPLICAS_CHART_KEY,
+        )?,
+        engine_max_connections: parse_knob(
+            env_required_chart(
+                &env,
+                "DB_ENGINE_MAX_CONNECTIONS",
+                "database.engineMaxConnections",
+            )?,
+            "DB_ENGINE_MAX_CONNECTIONS",
+            "database.engineMaxConnections",
+        )?,
+        ssl_mode: parse_ssl_mode(&env_required_chart(&env, SSL_MODE_KEY, "database.sslMode")?)?,
         // STILL AN OPTIONAL READ, and deliberately NOT converted to
         // `env_required` with the rest (ADR-0569). The chart renders
         // DB_SSL_CA_FILE only under `database.sslCaSecret`, so requiring it would
@@ -182,143 +228,6 @@ pub fn probe_connect_options(
     secret: &Secret,
 ) -> Result<MySqlConnectOptions, BootError> {
     Ok(yadgar_store::pool::connect_options(config, secret)?)
-}
-
-/// The identity this module presents to callers: a certificate and its private
-/// key, both as paths on disk.
-///
-/// **File paths, never an issuer-specific resource** (D80). cert-manager writes
-/// these files in the reference deployment and a hand-assembled Secret writes
-/// them anywhere else, and nothing here can tell the difference — which is the
-/// point.
-///
-/// **No verification domain.** A client checks the name it dialled against the
-/// certificate it was shown; a server presents what it was given and checks
-/// nothing. A caller's `UpstreamTls` carries a domain override for that reason
-/// and this does not, which is an asymmetry rather than an omission.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServeTls {
-    cert_file: PathBuf,
-    key_file: PathBuf,
-}
-
-impl ServeTls {
-    /// Read the listener's transport configuration from the environment.
-    ///
-    /// `Ok(None)` is the ordinary answer today: TLS is opt-in, so an
-    /// unconfigured deployment serves in cleartext.
-    pub fn from_env(prefix: &'static str) -> Result<Option<Self>, BootError> {
-        Self::from_lookup(prefix, |key| std::env::var(key).ok())
-    }
-
-    /// The same decision, over an injected lookup — the shape every other
-    /// decision in this module already takes, and for the same reason:
-    /// `std::env` is process-global, so a test that sets one variable steers
-    /// every other test in the binary.
-    pub fn from_lookup(
-        prefix: &'static str,
-        lookup: impl Fn(&str) -> Option<String>,
-    ) -> Result<Option<Self>, BootError> {
-        let get = |suffix: &str| {
-            lookup(&format!("{prefix}_{suffix}"))
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        };
-
-        // Exactly "1". A permissive parse here — "0", "false" and "no" all
-        // enabling it — is how a setting meant to be off ends up on, and the
-        // reverse mistake is worse: this flag is the revert lever for a
-        // cut-over, and a lever that does not move is not one.
-        if get("TLS_ENABLED").as_deref() != Some("1") {
-            if get("TLS_CERT_FILE").is_some() || get("TLS_KEY_FILE").is_some() {
-                // NOT an error. Leaving the certificate in place while the flag
-                // is off is exactly how a cut-over gets reverted, so refusing it
-                // would make the lever unusable. It is still worth a line: a
-                // deployment that believes it is encrypted and is not should be
-                // able to see that from the boot log.
-                tracing::warn!(
-                    prefix,
-                    "a serving certificate is configured but {prefix}_TLS_ENABLED is not \
-                     \"1\", so this module listens in CLEARTEXT"
-                );
-            }
-            return Ok(None);
-        }
-
-        Ok(Some(Self {
-            cert_file: PathBuf::from(get("TLS_CERT_FILE").ok_or(BootError::NoTlsCertFile(prefix))?),
-            key_file: PathBuf::from(get("TLS_KEY_FILE").ok_or(BootError::NoTlsKeyFile(prefix))?),
-        }))
-    }
-
-    /// The PEM certificate this module presents.
-    pub fn cert_file(&self) -> &Path {
-        &self.cert_file
-    }
-
-    /// The PEM private key belonging to that certificate.
-    pub fn key_file(&self) -> &Path {
-        &self.key_file
-    }
-
-    /// Read both files and hand tonic the pair.
-    ///
-    /// Reading them HERE rather than letting tonic do it is what lets the error
-    /// name WHICH file was wrong. `Identity::from_pem` takes bytes and has no
-    /// idea where they came from, so an operator whose Secret mounted only one
-    /// of the two would otherwise be told that "an identity" was unusable.
-    fn identity(&self) -> Result<Identity, BootError> {
-        let cert = read_pem(&self.cert_file, "certificate")?;
-        let key = read_pem(&self.key_file, "private key")?;
-        Ok(Identity::from_pem(cert, key))
-    }
-}
-
-fn read_pem(path: &Path, what: &'static str) -> Result<Vec<u8>, BootError> {
-    // ADR-0523-WATCHED: ServeTls
-    std::fs::read(path).map_err(|source| BootError::TlsUnreadable {
-        what,
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-/// Build the gRPC server this module listens with.
-///
-/// **THE ONLY SERVER CONSTRUCTION IN THIS BINARY, and that is structural rather
-/// than tidy.** The failure this seam exists to prevent is a listener that opens
-/// in cleartext because TLS configuration failed. A `Server::builder()` call
-/// anywhere else would be a place that downgrade could be written; with one, the
-/// only way to reintroduce it is to add a fallback here, where
-/// `a_tls_listener_refuses_a_cleartext_client` is looking.
-///
-/// **ALPN is tonic's, not ours.** `ServerTlsConfig` pushes `h2` onto the
-/// acceptor's protocol list, and a gRPC listener that negotiated anything else
-/// would answer nothing useful. It is verified rather than assumed: tonic's own
-/// client refuses a channel whose negotiated protocol is not `h2`, so the
-/// handshake cases in `tests/serve_tls.rs` fail if it ever stops being offered.
-///
-/// **Called BEFORE the probe and the migration**, so that a deployment which
-/// asked for TLS and got the mount wrong exits without touching the engine at
-/// all. D69 puts the refusals first; this one is cheaper than the rest.
-pub fn server(tls: Option<&ServeTls>) -> Result<Server, BootError> {
-    let server = Server::builder();
-    let Some(tls) = tls else {
-        return Ok(server);
-    };
-
-    let identity = tls.identity()?;
-    // EAGER, and before anything binds. `tls_config` builds the rustls acceptor
-    // here — it is what decodes the PEM and checks that the certificate belongs
-    // to the key — so a bad pair is an error at boot rather than a handshake
-    // that fails on a stranger's first connection.
-    server
-        .tls_config(ServerTlsConfig::new().identity(identity))
-        .map_err(|e| BootError::TlsUnusable {
-            cert: tls.cert_file.clone(),
-            key: tls.key_file.clone(),
-            detail: chain(&e),
-        })
 }
 
 /// The future `serve_with_shutdown` drains on, adapted to this module's error.
@@ -363,6 +272,14 @@ pub enum BootError {
          private key belonging to {0}_TLS_CERT_FILE."
     )]
     NoTlsKeyFile(&'static str),
+
+    #[error(
+        "{prefix}_TLS_ENABLED is {value:?}, which this module does not recognise. Set it to \
+         exactly \"1\" to serve with TLS or \"0\" to serve in cleartext — ADR-0845 accepts \
+         no other spelling, including \"true\"/\"false\"/\"yes\"/\"no\". The chart renders \
+         it as tls.enabled."
+    )]
+    TlsEnabledInvalid { prefix: &'static str, value: String },
 
     #[error(
         "the TLS {what} at {path} could not be read: {source}. TLS was asked for, so \
@@ -438,12 +355,30 @@ pub enum BootError {
     #[error(transparent)]
     Pool(#[from] PoolError),
 
-    #[error(transparent)]
-    Int(#[from] std::num::ParseIntError),
+    /// A knob that IS set, read, and is not a whole number (ledger 1257).
+    ///
+    /// Replaces the bare `Int(#[from] ParseIntError)` this variant used to
+    /// be: a `?` on `.parse()` turned any unreadable number into a
+    /// `ParseIntError` carrying neither the variable nor the chart key, so
+    /// an operator reading a crash loop learned only that SOME number could
+    /// not be read. [`parse_knob`] builds this naming both, plus the value
+    /// that failed — the same discipline [`BootError::MigrationLockWait`]
+    /// already holds for its own knob.
+    #[error("{key} is {value:?}, which is not a whole number: {source}. Set the chart value {chart_key}.")]
+    Unparsable {
+        key: &'static str,
+        chart_key: &'static str,
+        value: String,
+        #[source]
+        source: std::num::ParseIntError,
+    },
 }
 
 mod lock;
 pub use lock::{migration_lock, MIGRATION_LOCK_TIMEOUT_CHART_KEY, MIGRATION_LOCK_TIMEOUT_KEY};
+
+mod serve_tls;
+pub use serve_tls::{server, ServeTls};
 
 #[cfg(test)]
 mod tests;

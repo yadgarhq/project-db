@@ -269,13 +269,20 @@ spec:
             # expression as gateway's YADGAR_MAX_REPLICAS, for the same reason.
             - name: REPLICAS
               value: {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.maxReplicas | quote }}{{ else }}{{ .Values.replicaCount | quote }}{{ end }}
-            {{- if .Values.tls.enabled }}
             # THE HOP INTO THIS POD, which DB_SSL_MODE above says nothing about:
-            # that one describes the connection out to the engine. Rendered only
-            # when asked for, so a deployment that has not cut over sends the
-            # binary nothing and opens the cleartext listener it always opened.
+            # that one describes the connection out to the engine.
+            #
+            # RENDERED UNCONDITIONALLY (ADR-0845, ledger 1278, C-DB1). This used
+            # to sit behind an `if tls.enabled` guard, so a deployment that
+            # had not cut over sent the binary NOTHING — and `boot::ServeTls`
+            # used to read that absence as "serve in cleartext" (ruling 5). The
+            # binary now REFUSES an absent `LISTEN_TLS_ENABLED`, so the chart has
+            # to say "0" out loud rather than say nothing; `ternary` is what
+            # makes the two still agree, because the render-checks.yaml guard
+            # above refuses everything `ternary` would otherwise choke on.
             - name: LISTEN_TLS_ENABLED
-              value: "1"
+              value: {{ ternary "1" "0" .Values.tls.enabled | quote }}
+            {{- if .Values.tls.enabled }}
             # PATHS, never an issuer-specific resource (D80). Two of them,
             # because a certificate and its key are two files — and naming them
             # separately is what lets the binary say WHICH of the two was missing
@@ -284,6 +291,20 @@ spec:
               value: /var/run/config/serving-cert/tls.crt
             - name: LISTEN_TLS_KEY_FILE
               value: /var/run/config/serving-cert/tls.key
+            {{- if and (kindIs "map" .Values.tls) (hasKey .Values.tls "clientAuth") }}
+            # B-U5E (folded into C-DB1): THE EXPAND HALF OF `tls.clientAuth`.
+            # Rendered only when the key is PRESENT — render-checks.yaml's guard
+            # above already refused anything but `off` here, so this is reached
+            # only with `off`, and the binary reads neither variable yet (B-U5
+            # is the contract). Nested inside `tls.enabled`, because mutual TLS
+            # with no server TLS is not a shape this chart offers.
+            - name: LISTEN_TLS_CLIENT_AUTH
+              value: {{ .Values.tls.clientAuth | quote }}
+            {{- if .Values.tls.clientCaSecret }}
+            - name: LISTEN_TLS_CLIENT_CA_FILE
+              value: /var/run/config/client-ca/ca.crt
+            {{- end }}
+            {{- end }}
             {{- end }}
           volumeMounts:
             # THE CONFIGURATION REPOSITORY'S SHARED CONFIGMAP (ADR-0569,
@@ -340,6 +361,15 @@ spec:
             - name: serving-cert
               mountPath: /var/run/config/serving-cert
               readOnly: true
+            {{- if .Values.tls.clientCaSecret }}
+            # B-U5E (folded into C-DB1): the `ca.crt` item, mounted only when
+            # `tls.clientCaSecret` is named. A directory mount, same reason as
+            # `engine-ca` and `serving-cert` above: a rotated authority must
+            # reach a running pod without a restart.
+            - name: client-ca
+              mountPath: /var/run/config/client-ca
+              readOnly: true
+            {{- end }}
             {{- end }}
           # NO readiness probe hitting a /health that returns early. The process
           # does not listen until the capability probe and migrations have both
@@ -538,4 +568,18 @@ spec:
                 path: tls.crt
               - key: {{ required "tls.keySecretKey names the key inside tls.certSecret that holds the private key and must be set whenever tls.enabled is; see the chart's values.yaml" .Values.tls.keySecretKey | quote }}
                 path: tls.key
+        {{- if .Values.tls.clientCaSecret }}
+        # B-U5E (folded into C-DB1): the authority a future `required` mode
+        # checks a CALLER's certificate against. Required rather than optional
+        # — same argument as `engine-ca` above, not `serving-cert`'s: nothing
+        # in this binary opens this file yet (B-U5 is what will), so there is
+        # no refusal downstream to defer to; a FailedMount naming this Secret
+        # is the only error there would be.
+        - name: client-ca
+          secret:
+            secretName: {{ .Values.tls.clientCaSecret }}
+            items:
+              - key: {{ required "tls.clientCaSecretKey names the key inside tls.clientCaSecret that holds the CA bundle and must be set whenever tls.clientCaSecret is; see the chart's values.yaml" .Values.tls.clientCaSecretKey | quote }}
+                path: ca.crt
+        {{- end }}
         {{- end }}

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::*;
 use yadgar_store::pool::MySqlSslMode;
 
@@ -295,38 +297,81 @@ fn an_empty_knob_refuses_with_a_message_of_its_own() {
 const SENTINEL_CERT: &str = "/etc/yadgar/okapi-3f19/serving.crt";
 const SENTINEL_KEY: &str = "/etc/yadgar/okapi-3f19/serving.key";
 
-/// THE DEFAULT for the listener: nothing configured means the cleartext
-/// listener.
+/// **ADR-0845.** Nothing configured used to mean the cleartext listener —
+/// exactly the compiled-in default ADR-0845 names as the most dangerous
+/// shape in the estate. It now refuses, naming the variable and the chart
+/// key, rather than falling back to anything.
 #[test]
-fn nothing_configured_means_the_listener_serves_cleartext() {
-    assert_eq!(ServeTls::from_lookup(LISTEN, env_of(&[])).unwrap(), None);
+fn an_absent_tls_enabled_refuses_naming_the_variable_and_the_chart_key() {
+    let err = ServeTls::from_lookup(LISTEN, env_of(&[]))
+        .expect_err("an absent LISTEN_TLS_ENABLED must refuse the boot");
+    let message = err.to_string();
+    assert!(matches!(err, BootError::MissingKnob(_)), "{message}");
+    assert!(message.contains("LISTEN_TLS_ENABLED"), "{message}");
+    assert!(message.contains("tls.enabled"), "{message}");
 }
 
-/// A certificate without the flag is the REVERTED state, not an error. The
-/// flag is the lever; leaving the paths in place is how it gets pulled back.
+/// Set-but-empty is its own message, same discipline [`env_required`] holds
+/// for every other knob.
 #[test]
-fn a_certificate_alone_does_not_enable_the_listeners_tls() {
+fn an_empty_tls_enabled_refuses_with_its_own_message() {
+    let empty = ServeTls::from_lookup(LISTEN, env_of(&[("LISTEN_TLS_ENABLED", "")]))
+        .expect_err("an empty LISTEN_TLS_ENABLED must refuse the boot")
+        .to_string();
+    let absent = ServeTls::from_lookup(LISTEN, env_of(&[]))
+        .expect_err("an absent LISTEN_TLS_ENABLED must refuse the boot")
+        .to_string();
+    assert!(empty.contains("set but EMPTY"), "{empty}");
+    assert!(absent.contains("NOT SET"), "{absent}");
+    assert_ne!(empty, absent, "empty and absent must not share one message");
+}
+
+/// A certificate alongside an EXPLICIT `"0"` is the REVERTED state, not an
+/// error. The flag is the lever; leaving the paths in place is how it gets
+/// pulled back. (Before ADR-0845 this was reachable with the flag merely
+/// absent; now the flag must be explicitly off.)
+#[test]
+fn a_certificate_alongside_an_explicit_zero_does_not_enable_the_listeners_tls() {
     let vars = [
+        ("LISTEN_TLS_ENABLED", "0"),
         ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
         ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
     ];
     assert_eq!(ServeTls::from_lookup(LISTEN, env_of(&vars)).unwrap(), None);
 }
 
-/// Anything but "1" is off.
+/// Exactly "1" turns it on, exactly "0" turns it off, and census H1's list of
+/// values this module used to treat as off now refuses instead of guessing.
 #[test]
-fn only_exactly_one_enables_the_listeners_tls() {
-    for value in ["0", "false", "no", "true", "yes", "", " "] {
-        let vars = [
+fn only_exactly_one_enables_the_listeners_tls_and_every_other_spelling_refuses() {
+    let vars_for = |value: &'static str| {
+        [
             ("LISTEN_TLS_ENABLED", value),
             ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
             ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
-        ];
-        assert_eq!(
-            ServeTls::from_lookup(LISTEN, env_of(&vars)).unwrap(),
-            None,
-            "{value:?} must not enable TLS"
+        ]
+    };
+
+    assert_eq!(
+        ServeTls::from_lookup(LISTEN, env_of(&vars_for("0"))).unwrap(),
+        None,
+        "\"0\" must mean cleartext"
+    );
+
+    for value in ["false", "no", "true", "yes"] {
+        let err = ServeTls::from_lookup(LISTEN, env_of(&vars_for(value)))
+            .expect_err("{value:?} must refuse rather than guess which way it meant");
+        assert!(
+            matches!(
+                err,
+                BootError::TlsEnabledInvalid {
+                    prefix: "LISTEN",
+                    ..
+                }
+            ),
+            "{value:?}: {err}"
         );
+        assert!(err.to_string().contains(value), "{value:?}: {err}");
     }
 }
 
@@ -378,7 +423,9 @@ fn the_certificate_and_the_key_both_arrive() {
 
 /// The two directions cannot configure each other. `DB_SSL_MODE` decides how
 /// this module reaches its ENGINE and says nothing about what it serves, and
-/// a bare `TLS_ENABLED` belongs to neither.
+/// a bare `TLS_ENABLED` belongs to neither — so it does not satisfy the
+/// prefixed `LISTEN_TLS_ENABLED` this function actually reads, and (since
+/// ADR-0845) an absent `LISTEN_TLS_ENABLED` refuses rather than defaulting.
 #[test]
 fn the_engines_transport_does_not_configure_the_listener() {
     let vars = [
@@ -386,7 +433,10 @@ fn the_engines_transport_does_not_configure_the_listener() {
         ("TLS_ENABLED", "1"),
         ("TLS_CERT_FILE", SENTINEL_CERT),
     ];
-    assert_eq!(ServeTls::from_lookup(LISTEN, env_of(&vars)).unwrap(), None);
+    let err = ServeTls::from_lookup(LISTEN, env_of(&vars))
+        .expect_err("a bare TLS_ENABLED must not satisfy LISTEN_TLS_ENABLED");
+    assert!(matches!(err, BootError::MissingKnob(_)), "{err}");
+    assert!(err.to_string().contains("LISTEN_TLS_ENABLED"), "{err}");
 }
 
 /// The crate returns one `io::Error` for both handlers, so what must not be
@@ -415,5 +465,59 @@ fn a_handler_that_cannot_be_installed_names_both_signals_and_the_response() {
             rendered.contains(expected),
             "the refusal no longer carries {expected:?}: {rendered}"
         );
+    }
+}
+
+/// EVERY MISSING-KNOB REFUSAL NAMES THE CHART KEY, not only the variable
+/// (ledger 1257). Before this, every one of these ended in the generic "The
+/// chart renders it." — true, but not where. An operator reading a crash
+/// loop is owed the line in `values.yaml` to edit, the same way
+/// `boot::lock::migration_lock`'s refusal already names
+/// `database.migrationLockTimeoutSeconds`.
+#[test]
+fn every_missing_knob_refusal_names_the_chart_key() {
+    let expected: &[(&str, &str)] = &[
+        ("DB_HOST", "database.host"),
+        ("DB_PORT", "database.port"),
+        ("DB_NAME", "database.name"),
+        ("DB_USER", "database.user"),
+        ("DB_MAX_CONNECTIONS", "database.maxConnections"),
+        ("REPLICAS", "replicaCount"),
+        ("DB_ENGINE_MAX_CONNECTIONS", "database.engineMaxConnections"),
+        (SSL_MODE_KEY, "database.sslMode"),
+    ];
+    for (key, chart_key) in expected {
+        let message = pool_config(env_without(key)).unwrap_err().to_string();
+        assert!(
+            message.contains(chart_key),
+            "{key} refused without naming {chart_key}: {message}"
+        );
+    }
+}
+
+/// EVERY UNPARSEABLE NUMERIC KNOB NAMES ITSELF, ITS VALUE AND THE CHART KEY
+/// (ledger 1257). A bare `?` on `.parse()` used to reach
+/// [`BootError::Int`] — a `ParseIntError` saying "invalid digit found in
+/// string" and nothing else, so an operator learned only that SOME number
+/// was unreadable.
+#[test]
+fn an_unparseable_numeric_knob_names_itself_the_value_and_the_chart_key() {
+    let expected: &[(&str, &str)] = &[
+        ("DB_PORT", "database.port"),
+        ("DB_MAX_CONNECTIONS", "database.maxConnections"),
+        ("REPLICAS", "replicaCount"),
+        ("DB_ENGINE_MAX_CONNECTIONS", "database.engineMaxConnections"),
+    ];
+    for (key, chart_key) in expected {
+        let err = pool_config(env_with(&[(key, "not-a-number")]))
+            .expect_err("a non-numeric value must refuse the boot");
+        let message = err.to_string();
+        assert!(
+            matches!(err, BootError::Unparsable { key: k, .. } if k == *key),
+            "{key}: {message}"
+        );
+        assert!(message.contains(key), "{key}: {message}");
+        assert!(message.contains(chart_key), "{key}: {message}");
+        assert!(message.contains("not-a-number"), "{key}: {message}");
     }
 }

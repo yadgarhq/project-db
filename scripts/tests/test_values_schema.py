@@ -63,16 +63,40 @@ OPEN = frozenset(
 
 # A template reads these; `values.yaml` does not declare them (brief §2 step 2,
 # §3.6). Declared as leaves inside their (now closed) parent block.
+#
+# `tls.clientAuth`, `tls.clientCaSecret` and `tls.clientCaSecretKey` join this
+# set for B-U5E (folded into C-DB1, ledger 1278): the schema declares them,
+# `templates/render-checks.yaml` validates them when present, and the binary
+# reads none of them yet — there is nothing for `values.yaml` to default,
+# same shape as `image.digest` above (a template reads it; nothing ships it).
 EXTRAS = frozenset(
     {
         "image.digest",
         "networkPolicy.scrapeFrom.namespace",
+        "tls.clientAuth",
+        "tls.clientCaSecret",
+        "tls.clientCaSecretKey",
     }
 )
 
 # Leaves that carry real type information (shipped before ledger 990, kept
 # unchanged by this PR) rather than the untyped `{}` every other leaf gets.
 RETAINED_TYPED_LEAVES = frozenset({"database.migrationLockTimeoutSeconds"})
+
+# `tls.enabled` (ledger 1278, ADR-0845, C-DB1): a leaf `values.yaml`
+# DELIBERATELY ships no value for, because the knob's own absence is the
+# property the schema exists to catch — a chart default here would be one
+# more compiled-in default under the exact rule this unit enforces on the
+# binary. Excluded from the values.yaml half of `expected_leaves` (there is
+# no value to find there) and from the untyped-leaf check below (the leaf
+# keeps `type: boolean`, same reason `RETAINED_TYPED_LEAVES` keeps its type:
+# `required` alone passes a null value through, K-1). A SEPARATE set from
+# `RETAINED_TYPED_LEAVES`, which is leaves shipped before ledger 990 and
+# unrelated to it; this one is new, and its own check also asserts the leaf
+# is in its parent block's `required` list, which `RETAINED_TYPED_LEAVES`'s
+# does not (that property is `database`'s own pre-existing test, in
+# `test_migration_lock_schema.py`).
+REQUIRED_NO_DEFAULT = frozenset({"tls.enabled"})
 
 
 def load_schema() -> dict:
@@ -142,7 +166,7 @@ def structural_failures(schema: dict, values: dict) -> list[str]:
     values_leaves, values_blocks = values_leaves_and_blocks(values)
     schema_leaves, schema_blocks = schema_leaves_and_blocks(schema)
 
-    expected_leaves = values_leaves | OPEN | EXTRAS
+    expected_leaves = values_leaves | OPEN | EXTRAS | REQUIRED_NO_DEFAULT
     if schema_leaves != expected_leaves:
         failures.append(
             "declared leaves disagree with values.yaml + OPEN + EXTRAS: "
@@ -168,7 +192,7 @@ def structural_failures(schema: dict, values: dict) -> list[str]:
         if node != {}:
             failures.append(f"OPEN path '{path}' is not a bare {{}} in the schema: {node}")
 
-    for path in sorted(schema_leaves - RETAINED_TYPED_LEAVES - OPEN):
+    for path in sorted(schema_leaves - RETAINED_TYPED_LEAVES - REQUIRED_NO_DEFAULT - OPEN):
         node = schema_node(schema, path)
         if node != {}:
             failures.append(f"leaf '{path}' should be untyped {{}}, got {node}")
@@ -177,6 +201,21 @@ def structural_failures(schema: dict, values: dict) -> list[str]:
         node = schema_node(schema, path)
         if node is None or node == {}:
             failures.append(f"retained typed leaf '{path}' lost its type")
+
+    # ADR-0845's K-1: `required` ALONE passes a null value, so a leaf in
+    # REQUIRED_NO_DEFAULT must carry both `type` AND appear in its parent
+    # block's own `required` list — either half dropped lets the knob's
+    # absence (or a null) reach the template unrefused by the schema.
+    for path in sorted(REQUIRED_NO_DEFAULT):
+        node = schema_node(schema, path)
+        if node is None or node == {}:
+            failures.append(f"required-no-default leaf '{path}' lost its type")
+        parent_path, _, leaf = path.rpartition(".")
+        parent = schema_node(schema, parent_path)
+        if parent is None or leaf not in parent.get("required", []):
+            failures.append(
+                f"'{path}' is not in its parent block '{parent_path}'s `required` list"
+            )
 
     if schema.get("additionalProperties") is not False:
         failures.append("root additionalProperties is not false")
@@ -211,6 +250,69 @@ def test_mutation_closing_an_open_map_reddens() -> None:
     mutated = copy.deepcopy(SCHEMA)
     mutated["properties"]["resources"] = {"properties": {}, "additionalProperties": False}
     assert structural_failures(mutated, VALUES) != []
+
+
+def test_mutation_dropping_tls_enabled_required_reddens() -> None:
+    """ADR-0845's own mutation (ledger 1278): drop `tls.required: [enabled]`
+    and the structural test must redden. `required` alone is what a chart
+    default's absence depends on — see `test_tls_enabled_renders_unconditionally`
+    below for the render-level half of the same property."""
+    mutated = copy.deepcopy(SCHEMA)
+    del mutated["properties"]["tls"]["required"]
+    assert structural_failures(mutated, VALUES) != []
+
+
+def test_mutation_dropping_tls_enabled_type_reddens() -> None:
+    """`required` alone passes a null value (K-1); the leaf must keep its
+    `type: boolean` too, independently of the `required` mutation above."""
+    mutated = copy.deepcopy(SCHEMA)
+    mutated["properties"]["tls"]["properties"]["enabled"] = {}
+    assert structural_failures(mutated, VALUES) != []
+
+
+def test_dropping_tls_required_on_disk_degrades_the_bare_lint_message(tmp_path) -> None:
+    """THE RENDER-LEVEL PROOF the two structural mutations above exist for,
+    and it is NOT "lint turns green" — measured, it does not. `templates/
+    deployment.yaml` renders `ternary "1" "0" .Values.tls.enabled`
+    UNCONDITIONALLY now (ADR-0845), and sprig's `ternary` raises a Go type
+    error on anything but a bool, absent included — so the bare lint stays
+    red with `required` gone too, on both helm 4.3.0 and 3.18.4 (measured).
+
+    WHAT `required` (PLUS `type: boolean`) ACTUALLY BUYS is the MESSAGE.
+    Correction #1 names it precisely: `templates/render-checks.yaml`'s own
+    `fail` is invisible to `helm lint --strict` as an ERROR — the harness
+    below shows it demoted to an `[INFO] Fail: …` line the lint output does
+    not fail on — so with the schema intact, the operator reads the schema's
+    clean `missing property 'enabled'` sentence; with `required` deleted on
+    disk, the SAME bare lint still exits non-zero, but now on sprig's raw
+    `wrong type for value; expected bool; got interface {}`, which names no
+    chart key at all. Dropping `required` is a real regression, measured as
+    a WORSE message on a lint that was already red, not as a green one.
+    """
+    import shutil
+
+    copy_dir = tmp_path / "chart"
+    shutil.copytree(CHART, copy_dir)
+    schema_copy = copy_dir / "values.schema.json"
+    mutated = json.loads(schema_copy.read_text())
+    del mutated["properties"]["tls"]["required"]
+    schema_copy.write_text(json.dumps(mutated))
+
+    from test_render_checks import helm
+
+    before = helm("lint", "--strict", str(CHART))
+    after = helm("lint", "--strict", str(copy_dir))
+
+    assert before.returncode != 0, "the unmutated chart's bare lint must already refuse"
+    assert after.returncode != 0, "dropping `required` must not turn the bare lint green"
+    assert "missing property" in before.stdout + before.stderr, (
+        "the unmutated chart must report the schema's own clean sentence: "
+        f"{before.stdout}{before.stderr}"
+    )
+    assert "missing property" not in after.stdout + after.stderr, (
+        "dropping `required` on disk should have lost the schema's clean sentence: "
+        f"{after.stdout}{after.stderr}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -392,12 +494,14 @@ def test_untyped_leaf_accepts_a_string_override() -> None:
 
 
 def test_lint_strict_refuses_the_same_root_typo_naming_the_key() -> None:
-    from test_render_checks import helm
+    from test_render_checks import CI_VALUES, helm
 
     result = helm(
         "lint",
         "--strict",
         str(CHART),
+        "--values",
+        str(CI_VALUES),
         "--set",
         "autoscalng.enabled=true",
     )
