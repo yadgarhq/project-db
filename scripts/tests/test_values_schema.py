@@ -4,7 +4,7 @@ WHAT THIS FILE ADDS. Before this PR the schema bounded exactly one knob
 (`database.migrationLockTimeoutSeconds`, ledger 814) and left every other key
 unvalidated: a typo anywhere else in `values.yaml` rendered silently. This file
 closes every block the chart itself owns, declares the keys the templates read
-that `values.yaml` does not (the EXTRAS below), and keeps three things open on
+that `values.yaml` does not (the EXTRAS below), and keeps four things open on
 purpose (the OPEN paths below) because a template hands them straight to
 `toYaml` or `with` and any shape is legal there.
 
@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -226,14 +227,37 @@ def test_mutation_closing_an_open_map_reddens() -> None:
 # 3.20.2 and 4.3.0 (brief's measurement set), so both shapes must pass.
 
 
-def assert_schema_refusal(stderr: str, key: str, path: tuple[str, ...] = ()) -> None:
-    assert key in stderr, stderr
-    if path:
-        dotted = ".".join(path)
-        pointer = "/" + "/".join(path)
-        assert dotted in stderr or pointer in stderr, stderr
-    else:
-        assert "(root)" in stderr or "at ''" in stderr, stderr
+# Adopted from task-db#83's test_values_schema.py (ledger 990 opus review):
+# `assert_schema_refusal` above passed on a deeper wrong path, a substring key
+# and even a non-schema error, because it only checked substring membership.
+# `extract_refusal` parses EITHER measured helm shape into the same
+# (path-segment-tuple, key) pair, and callers compare that pair exactly.
+REFUSAL_SLASH_PATH = re.compile(
+    r"at '([^']*)': additional propert(?:y|ies) '([^']+)'(?:, '[^']+')* (?:is |are )?not allowed"
+)
+REFUSAL_DOTTED_PATH = re.compile(
+    r"^-\s+(\(root\)|[A-Za-z0-9_.\-]+):\s+Additional propert(?:y|ies)\s+(\S+)\s+(?:is|are)\s+not allowed",
+    re.MULTILINE,
+)
+
+
+def extract_refusal(stderr: str) -> tuple[tuple[str, ...], str] | None:
+    """The JSON path (as a tuple of segments) and the key name out of a schema
+    refusal — on EITHER measured helm shape — never the sentence around them.
+    """
+    match = REFUSAL_SLASH_PATH.search(stderr)
+    if match:
+        raw_path, key = match.group(1), match.group(2)
+        segments = tuple(raw_path.strip("/").split("/")) if raw_path.strip("/") else ()
+        return segments, key
+
+    match = REFUSAL_DOTTED_PATH.search(stderr)
+    if match:
+        raw_path, key = match.group(1), match.group(2)
+        segments = () if raw_path == "(root)" else tuple(raw_path.split("."))
+        return segments, key
+
+    return None
 
 
 def baseline_object_count() -> int:
@@ -248,25 +272,41 @@ BASELINE_OBJECTS = baseline_object_count()
 def test_root_typo_is_refused_naming_the_key_at_the_root_path() -> None:
     result = render(CHART, "--set", "autoscalng.enabled=true")
     assert result.returncode != 0, "a root-level typo rendered"
-    assert_schema_refusal(result.stderr, "autoscalng")
+    found = extract_refusal(result.stderr)
+    assert found, result.stderr
+    path, key = found
+    assert path == (), (path, result.stderr)
+    assert key == "autoscalng", (key, result.stderr)
 
 
 def test_one_level_down_typo_is_refused_naming_the_key_and_the_parent_path() -> None:
     result = render(CHART, "--set", "autoscaling.enabeld=true")
     assert result.returncode != 0, "a typo one level down rendered"
-    assert_schema_refusal(result.stderr, "enabeld", ("autoscaling",))
+    found = extract_refusal(result.stderr)
+    assert found, result.stderr
+    path, key = found
+    assert path == ("autoscaling",), (path, result.stderr)
+    assert key == "enabeld", (key, result.stderr)
 
 
 def test_two_levels_down_typo_is_refused_naming_the_key_and_the_parent_path() -> None:
     result = render(CHART, "--set", "networkPolicy.scrapeFrom.namespac=x")
     assert result.returncode != 0, "a typo two levels down rendered"
-    assert_schema_refusal(result.stderr, "namespac", ("networkPolicy", "scrapeFrom"))
+    found = extract_refusal(result.stderr)
+    assert found, result.stderr
+    path, key = found
+    assert path == ("networkPolicy", "scrapeFrom"), (path, result.stderr)
+    assert key == "namespac", (key, result.stderr)
 
 
 def test_twin_only_two_levels_down_typo_under_database_instance_storage() -> None:
     result = render(CHART, "--set", "database.instance.storage.siz=10Gi")
     assert result.returncode != 0, "a typo under database.instance.storage rendered"
-    assert_schema_refusal(result.stderr, "siz", ("database", "instance", "storage"))
+    found = extract_refusal(result.stderr)
+    assert found, result.stderr
+    path, key = found
+    assert path == ("database", "instance", "storage"), (path, result.stderr)
+    assert key == "siz", (key, result.stderr)
 
 
 def test_wrong_type_toggle_is_a_render_check_refusal_not_a_schema_refusal() -> None:
@@ -281,6 +321,7 @@ def test_wrong_type_toggle_is_a_render_check_refusal_not_a_schema_refusal() -> N
     assert "schema" not in result.stderr.lower(), (
         "the schema refused this, not the render check:\n" + result.stderr
     )
+    assert "`autoscaling.enabled` must be true or false" in result.stderr, result.stderr
 
 
 def test_block_scalar_is_a_render_check_refusal_not_a_schema_refusal() -> None:
@@ -289,6 +330,7 @@ def test_block_scalar_is_a_render_check_refusal_not_a_schema_refusal() -> None:
     assert "schema" not in result.stderr.lower(), (
         "the schema refused this, not the render check:\n" + result.stderr
     )
+    assert "`autoscaling` must be a map" in result.stderr, result.stderr
 
 
 def test_deleted_leaf_is_a_render_check_refusal_not_a_schema_refusal() -> None:
@@ -297,6 +339,7 @@ def test_deleted_leaf_is_a_render_check_refusal_not_a_schema_refusal() -> None:
     assert "schema" not in result.stderr.lower(), (
         "the schema refused this, not the render check:\n" + result.stderr
     )
+    assert "`autoscaling.enabled` is absent" in result.stderr, result.stderr
 
 
 def test_deleted_block_is_a_render_check_refusal_not_a_schema_refusal() -> None:
@@ -305,6 +348,7 @@ def test_deleted_block_is_a_render_check_refusal_not_a_schema_refusal() -> None:
     assert "schema" not in result.stderr.lower(), (
         "the schema refused this, not the render check:\n" + result.stderr
     )
+    assert "`autoscaling` is absent from the values" in result.stderr, result.stderr
 
 
 def test_open_map_resources_accepts_any_shape() -> None:
