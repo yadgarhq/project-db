@@ -251,19 +251,30 @@ database:
 # by hand produces something neither the chart nor the binary can tell apart.
 # Nothing here requires a CRD, an issuer or a mesh.
 tls:
-  # OFF, and turning it on is a separate, revertible change. The caller has to
-  # dial this pod over TLS at the same moment, so turning this on alone breaks
-  # the hop rather than securing it: the two flags move together, once
-  # certificates exist. The same discipline every other cut-over in this estate
-  # has used.
+  # NO DEFAULT (ADR-0845, ledger 1278, C-DB1). This used to ship `false`, and
+  # that default is exactly what ADR-0845 names as the most dangerous
+  # compiled-in default in the estate: a security switch whose unset value
+  # nobody wrote. Every deployment now sets it explicitly — `enabled: true`
+  # or `enabled: false` — and `chart/values.schema.json` makes it `required`
+  # with `type: boolean`, so a values file that omits it, or writes `null`,
+  # refuses to install rather than silently serving cleartext.
   #
-  # THERE IS NO SILENT MIDDLE STATE. `true` with a certificate that is missing,
-  # undecodable, or not the partner of its key fails at boot naming the file.
-  # The process NEVER opens a plaintext listener because TLS configuration
-  # failed. `false` with a certificate still configured is the reverted state,
-  # and project-db logs a warning saying it is listening in cleartext, so nobody
-  # has to infer it.
-  enabled: false
+  # TURNING IT ON OR OFF IS A SEPARATE, REVERTIBLE CHANGE from everything else
+  # here. The caller has to dial this pod over TLS at the same moment, so
+  # flipping this alone breaks the hop rather than securing it: the two flags
+  # move together, once certificates exist. The same discipline every other
+  # cut-over in this estate has used.
+  #
+  # THERE IS NO SILENT MIDDLE STATE. `true` with a certificate that is
+  # missing, undecodable, or not the partner of its key fails at boot naming
+  # the file. The process NEVER opens a plaintext listener because TLS
+  # configuration failed. `false` with a certificate still configured is the
+  # reverted state, and project-db logs a warning saying it is listening in
+  # cleartext, so nobody has to infer it.
+  #
+  # enabled: true | false   # set per deployment; see chart/ci/values.yaml for
+  #                          # what this chart's own CI renders against.
+  #
   # The Secret holding this module's OWN certificate and its private key.
   #
   # A `kubernetes.io/tls` Secret is what an issuer writes, and it carries
@@ -291,6 +302,17 @@ tls:
   # is free to call them something else.
   certSecretKey: tls.crt
   keySecretKey: tls.key
+  # ── MUTUAL TLS, DECLARED BUT NOT YET ENFORCED (B-U5E expand, folded into
+  # C-DB1) ─────────────────────────────────────────────────────────────────
+  #
+  # NO KEYS WRITTEN HERE. `chart/values.schema.json` declares `clientAuth`,
+  # `clientCaSecret` and `clientCaSecretKey` as leaves this chart will accept,
+  # and `templates/render-checks.yaml` refuses `clientAuth: optional` or
+  # `clientAuth: required` for now — the binary does not read either variable
+  # yet (ledger 1278; B-U5 is the contract that adopts
+  # `yadgar_lifecycle::serve_tls` and enforces the mode). Writing `off` here
+  # ahead of that contract would be a no-op with an extra line to keep in
+  # sync; omitting the keys is `off` already.
 
 # D68: scale on CONCURRENCY, not CPU. A -db waits on MariaDB and a logic service
 # waits on its -db, so both saturate at low CPU — a CPU-driven HPA stays quiet

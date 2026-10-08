@@ -131,6 +131,11 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 CHART = REPO / "chart"
 
+# ADR-0845 (ledger 1278, C-DB1): `tls.enabled` has no chart default any more,
+# so every render of `CHART` through `render()` below needs this applied.
+# See `render()`'s own docstring for why it is passed FIRST.
+CI_VALUES = CHART / "ci" / "values.yaml"
+
 # THE CHART'S OWN NAME, and the prefix of the template this chart defines. Helm
 # template names are global across a chart tree (module docstring), so this prefix
 # is what keeps three sibling `-db` charts from defining one name between them.
@@ -456,7 +461,19 @@ def red_api_versions(declared: Iterable[str], under_test: str) -> tuple[str, ...
 
 
 def render(chart: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return helm("template", CHART_NAME, str(chart), *arguments)
+    """`helm template`, with THIS CHART'S OWN `ci/values.yaml` applied first.
+
+    ADR-0845 (ledger 1278, C-DB1) drops `tls.enabled`'s chart default and
+    makes it `required`, so a bare render of `chart` (which carries the real
+    `values.schema.json`) now refuses on that alone, with nothing in the
+    CALLER's own `arguments` to explain why — the same reason
+    `yadgarhq/chart`'s own `chart/ci/values.yaml` exists at the parent level
+    (ruling 11). `CI_VALUES` is placed FIRST so any `-f`/`--set` in
+    `arguments` is read AFTER it and wins for whatever key it touches —
+    including `tls` itself, for a case that means to test it. A throwaway
+    fixture chart with no `tls` key and no schema simply gains an unread one.
+    """
+    return helm("template", CHART_NAME, str(chart), "--values", str(CI_VALUES), *arguments)
 
 
 def objects(stdout: str) -> list[dict]:
@@ -1454,3 +1471,233 @@ def test_stripping_the_autoscaling_map_test_lets_the_non_map_shape_through(tmp_p
         "the not-a-map arm was stripped and its message still appeared — this "
         "construction does not reproduce the gap it is named for"
     )
+
+
+# ── ADR-0845 (ledger 1278, C-DB1): `tls.enabled` renders unconditionally ────
+#
+# THE K-1 GUARD'S SENTENCE, asserted whole rather than as a substring (K-1's
+# own rule: "assert the designed sentence, not a substring"). Two of K-1's
+# three non-absent red shapes — `tls: {enabled: null}` and
+# `tls: {enabled: "true"}` — are caught by the SCHEMA before the template
+# ever runs (`scripts/tests/test_values_schema.py` asserts those, by key and
+# path only, per correction #3). `tls: null` is the one that reaches this
+# guard: Helm deletes a null-valued key a chart in the tree declares and
+# restores no default, so the whole block disappears before the schema's
+# per-property checks ever see it.
+TLS_ENABLED_GUARD_SENTENCE = (
+    "project-db: tls.enabled must be set to true or false; it renders "
+    "LISTEN_TLS_ENABLED (ADR-0845, ADR-0797)"
+)
+
+
+def test_tls_null_refuses_with_the_designed_guard_sentence(tmp_path):
+    overlay = tmp_path / "tls-null.yaml"
+    overlay.write_text("tls: null\n")
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode != 0, "tls: null must refuse rather than render"
+    assert TLS_ENABLED_GUARD_SENTENCE in result.stderr, result.stderr
+
+
+def env_value(manifest: str, name: str) -> str:
+    """The `value:` line immediately under `- name: <name>`, stripped. PURE.
+
+    Indentation-agnostic on purpose: this file's env block sits four levels
+    deep in the Deployment's containers list, and a literal multi-line
+    substring tied to that depth breaks the moment either line's indent
+    changes for a reason that has nothing to do with the property under
+    test.
+    """
+    lines = manifest.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == f"- name: {name}":
+            return lines[i + 1].strip()
+    raise AssertionError(f"{name} is not rendered at all")
+
+
+def test_tls_enabled_true_renders_the_variable_unconditionally():
+    result = render(CHART, "--set", "tls.enabled=true")
+    assert result.returncode == 0, result.stderr
+    assert env_value(result.stdout, "LISTEN_TLS_ENABLED") == 'value: "1"'
+
+
+def test_tls_enabled_false_renders_the_variable_too_rather_than_omitting_it():
+    """H1's own rule: the chart says "0" OUT LOUD now, because the binary
+    refuses an absent value — the old shape, where `false` rendered NO
+    `LISTEN_TLS_ENABLED` at all, is exactly what ADR-0845 closes."""
+    result = render(CHART, "--set", "tls.enabled=false")
+    assert result.returncode == 0, result.stderr
+    assert env_value(result.stdout, "LISTEN_TLS_ENABLED") == 'value: "0"'
+    assert "LISTEN_TLS_CERT_FILE" not in result.stdout
+
+
+# NOTE: a golden test comparing HEAD's render against a live `git fetch
+# origin main` + `git archive` of the parent repo (coordinator-removed,
+# re-review on project-db#54) used to live here. Deleted by coordinator
+# ruling: it reached across the network/VCS for a comparison this file's
+# other render-level tests already cover more directly (the unconditional
+# `ternary` shape is asserted by `test_tls_enabled_true_renders_the_variable_
+# unconditionally` and `test_tls_enabled_false_renders_the_variable_too_
+# rather_than_omitting_it` above), without that test's dependency on network
+# access or a same-moment `origin/main`.
+
+# ── B-U5E (folded into C-DB1): the `tls.clientAuth` expand ──────────────────
+#
+# VALIDATED ONLY WHEN PRESENT. An absent key must render EXACTLY as
+# origin/main — asserted directly below rather than through the two-chart
+# golden comparison above, because `tls.clientAuth` does not exist on
+# origin/main's chart at all yet; "render the same" here means "render with
+# none of the three new env/volume additions", which a substring check proves
+# more directly than a document diff would.
+CLIENT_AUTH_NOT_ENFORCED_SENTENCE = (
+    "this chart version renders the key but the binary does not enforce mutual "
+    "TLS yet"
+)
+
+
+def test_client_auth_absent_renders_exactly_as_before():
+    result = render(CHART, "--set", "tls.enabled=true")
+    assert result.returncode == 0, result.stderr
+    for absent in ("LISTEN_TLS_CLIENT_AUTH", "LISTEN_TLS_CLIENT_CA_FILE", "client-ca"):
+        assert absent not in result.stdout, (
+            f"{absent} rendered with tls.clientAuth absent; the expand must be "
+            f"render-neutral (K-8 step 1)"
+        )
+
+
+def test_client_auth_bad_mode_refuses(tmp_path):
+    overlay = tmp_path / "bad-mode.yaml"
+    overlay.write_text("tls: {enabled: true, clientAuth: bogus}\n")
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode != 0
+    assert 'tls.clientAuth is "bogus"; it must be off, optional or required.' in result.stderr
+
+
+# THE EXACT SENTENCE a non-string `tls.clientAuth` refuses with (coordinator
+# review, project-db#54, B-U5E-convention.md item 2). Asserted whole, same
+# discipline as TLS_ENABLED_GUARD_SENTENCE above.
+CLIENT_AUTH_NOT_A_STRING_SENTENCE_PREFIX = (
+    'project-db: tls.clientAuth must be a quoted string ("off", "optional" or '
+    '"required") and is bool (false). YAML reads a bare off as false: write '
+    'clientAuth: "off".'
+)
+
+
+def test_unquoted_off_from_a_values_file_refuses_naming_the_yaml_gotcha(tmp_path):
+    """THE SHAPE A VALUES FILE, NOT `--set`, ACTUALLY WRITES. YAML 1.1 reads a
+    bare `off` as the boolean `false`; `--set tls.clientAuth=off` keeps it a
+    STRING (helm's `--set` grammar has no boolean literals), so a test built
+    on `--set` could not reach this arm at all — it has to be a `-f` values
+    file, which is what an adopter actually hand-writes.
+    """
+    overlay = tmp_path / "unquoted-off.yaml"
+    overlay.write_text("tls: {enabled: true, clientAuth: off}\n")
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode != 0, "an unquoted `off` must refuse, not render as false"
+    assert CLIENT_AUTH_NOT_A_STRING_SENTENCE_PREFIX in result.stderr, result.stderr
+
+
+def test_dropping_the_client_auth_kindis_guard_loses_its_sentence(tmp_path):
+    """The mutation: strip the `kindIs "string"` arm and the SAME unquoted
+    `off` overlay must stop producing this sentence — proving the test above
+    actually depends on the guard, not on the enum check below it (which
+    would still refuse a bare `false`, by a different and less useful
+    sentence, even with this arm gone).
+    """
+    copy_dir = tmp_path / "chart"
+    shutil.copytree(CHART, copy_dir)
+    template = copy_dir / "templates" / "render-checks.yaml"
+    opening = '{{- if not (kindIs "string" .Values.tls.clientAuth) }}'
+    template.write_text(strip_arm(template.read_text(), opening))
+
+    overlay = tmp_path / "unquoted-off.yaml"
+    overlay.write_text("tls: {enabled: true, clientAuth: off}\n")
+    result = render(copy_dir, "--values", str(overlay))
+    assert CLIENT_AUTH_NOT_A_STRING_SENTENCE_PREFIX not in result.stderr, (
+        "the kindIs guard was stripped and its sentence still appeared: "
+        f"{result.stderr}"
+    )
+
+
+def test_client_auth_optional_and_required_both_refuse_with_the_not_enforced_yet_sentence(
+    tmp_path,
+):
+    for mode in ("optional", "required"):
+        overlay = tmp_path / f"{mode}.yaml"
+        overlay.write_text(f"tls: {{enabled: true, clientAuth: {mode}}}\n")
+        result = render(CHART, "--values", str(overlay))
+        assert result.returncode != 0, f"clientAuth: {mode} must refuse (B-U5 is not merged)"
+        assert CLIENT_AUTH_NOT_ENFORCED_SENTENCE in result.stderr, result.stderr
+        assert mode in result.stderr, result.stderr
+
+
+def test_client_auth_off_renders_the_variable_the_binary_does_not_yet_read(tmp_path):
+    # QUOTED, DELIBERATELY: unquoted `off` is a YAML 1.1 boolean literal
+    # (`false`), measured to reach the render check as `bool`, which the
+    # `kindIs "string"` arm then (correctly) refuses. The schema's
+    # `tls.clientAuth` leaf is untyped ({}), same reason as every other
+    # EXTRAS leaf, so nothing there catches an adopter's unquoted `off`
+    # either — a sentence worth adding to `values.yaml` when B-U5 ships it.
+    overlay = tmp_path / "off.yaml"
+    overlay.write_text('tls: {enabled: true, clientAuth: "off"}\n')
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode == 0, result.stderr
+    assert env_value(result.stdout, "LISTEN_TLS_CLIENT_AUTH") == 'value: "off"'
+    # NO CA ENV OR ITEM: `clientCaSecret` was not named alongside `clientAuth`.
+    assert "LISTEN_TLS_CLIENT_CA_FILE" not in result.stdout
+    assert "client-ca" not in result.stdout
+
+
+def test_client_ca_secret_renders_its_env_and_item_only_when_named(tmp_path):
+    overlay = tmp_path / "ca.yaml"
+    overlay.write_text(
+        'tls: {enabled: true, clientAuth: "off", clientCaSecret: proj-client-ca, '
+        "clientCaSecretKey: ca.crt}\n"
+    )
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode == 0, result.stderr
+    assert "- name: LISTEN_TLS_CLIENT_CA_FILE" in result.stdout
+    assert "value: /var/run/config/client-ca/ca.crt" in result.stdout
+    assert "name: client-ca" in result.stdout
+    assert "secretName: proj-client-ca" in result.stdout
+
+
+def test_client_ca_secret_alone_with_no_client_auth_mounts_nothing(tmp_path):
+    """CASE A (coordinator review, project-db#54): `tls.enabled: true` and
+    `tls.clientCaSecret` set, but `tls.clientAuth` ABSENT, must render no CA
+    env, mount or volume at all — a CA Secret with no client-auth mode to
+    pair it with is one this pod would mount and never read. Before the
+    fix, the mount and the volume checked only `tls.clientCaSecret`, so this
+    shape mounted a Secret the env block (gated on `clientAuth` too) never
+    told the binary about.
+    """
+    overlay = tmp_path / "ca-no-client-auth.yaml"
+    overlay.write_text(
+        "tls: {enabled: true, clientCaSecret: proj-client-ca, clientCaSecretKey: ca.crt}\n"
+    )
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode == 0, result.stderr
+    assert "LISTEN_TLS_CLIENT_CA_FILE" not in result.stdout
+    assert "client-ca" not in result.stdout
+    assert "proj-client-ca" not in result.stdout
+
+
+def test_client_ca_secret_empty_string_mounts_nothing_even_with_client_auth_present(
+    tmp_path,
+):
+    """THE OTHER HALF OF CASE A (coordinator re-review, project-db#54): the
+    three gates read `.Values.tls.clientCaSecret` for its TRUTHINESS, not
+    with `hasKey` — Helm renders an unset chart value as `""`, and `""` is
+    falsy in a Go template `if`. A mutation that swapped the truthiness
+    read for `hasKey .Values.tls "clientCaSecret"` would still see this key
+    PRESENT and mount an empty `secretName: ""`, which the previous case-A
+    test (clientCaSecret entirely ABSENT) cannot catch — `hasKey` answers
+    the same `false` as truthiness does when the key is missing, so only an
+    explicit empty STRING falsifies `hasKey` without falsifying truthiness.
+    """
+    overlay = tmp_path / "ca-empty-string.yaml"
+    overlay.write_text('tls: {enabled: true, clientAuth: "off", clientCaSecret: ""}\n')
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode == 0, result.stderr
+    assert "LISTEN_TLS_CLIENT_CA_FILE" not in result.stdout
+    assert "client-ca" not in result.stdout
+    assert 'secretName: ""' not in result.stdout

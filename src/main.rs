@@ -92,7 +92,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // can observe is one D67 cannot measure either.
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                // RUST_LOG unset enables "info" rather than refusing the
+                // boot, deliberately: a service that cannot start without a
+                // log level would be worse than one that starts quiet.
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")), // ADR-0569-EXCEPTION(LIB): log level is observability, not behaviour (census B8)
         )
         .init();
 
@@ -212,7 +215,12 @@ async fn serve(
     // installs one picks the backend for every service linking it. A failure here
     // is logged and ignored: a service that cannot export metrics should still
     // serve traffic, which is D25's rule applied to the metrics path too.
-    let metrics_addr: SocketAddr = env_required("METRICS_LISTEN")?.parse()?;
+    // NAMED ON FAILURE (ledger 1257), through `boot::parse_listen_addr` —
+    // the one function `src/boot/tests.rs` can prove the naming survives, a
+    // bare `?` here turning the address into an unnamed `AddrParseError`
+    // could not be.
+    let metrics_addr: SocketAddr =
+        boot::parse_listen_addr("METRICS_LISTEN", &env_required("METRICS_LISTEN")?)?;
     if let Err(e) = yadgar_telemetry::metrics::install_prometheus(metrics_addr) {
         tracing::warn!(error = %e, "metrics endpoint unavailable; continuing without it");
     }
@@ -223,7 +231,8 @@ async fn serve(
     // shows the loaded leaf ageing out.
     tls_inputs.export_not_after();
 
-    let addr: SocketAddr = env_required("LISTEN")?.parse()?;
+    // NAMED ON FAILURE, same reason and same function as `METRICS_LISTEN` above.
+    let addr: SocketAddr = boot::parse_listen_addr("LISTEN", &env_required("LISTEN")?)?;
 
     // ARMED BEFORE THE SERVER IS SPAWNED, and that ordering is the fix rather
     // than an accident of where the line sits. `boot::shutdown` is a `fn`

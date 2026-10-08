@@ -22,6 +22,12 @@ CHART = Path(__file__).resolve().parents[2] / "chart"
 KNOB = "database.migrationLockTimeoutSeconds"
 VARIABLE = "DB_MIGRATION_LOCK_TIMEOUT_SECONDS"
 
+# ADR-0845 (ledger 1278, C-DB1): `tls.enabled` lost its chart default and is
+# now `required`, so a bare render of this chart refuses on that alone — with
+# nothing about the migration lock in the diagnostic. Applied FIRST, same as
+# `test_render_checks.py::render`, so an `arguments` override still wins.
+CI_VALUES = CHART / "ci" / "values.yaml"
+
 
 def render(*arguments: str) -> subprocess.CompletedProcess[str]:
     binary = shutil.which("helm")
@@ -30,7 +36,7 @@ def render(*arguments: str) -> subprocess.CompletedProcess[str]:
         "`helm lint and render` pre-commit hook — install helm rather than skip."
     )
     return subprocess.run(
-        [binary, "template", "lock", str(CHART), *arguments],
+        [binary, "template", "lock", str(CHART), "--values", str(CI_VALUES), *arguments],
         capture_output=True,
         text=True,
     )

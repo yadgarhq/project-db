@@ -9,8 +9,13 @@ use crate::service::ProjectDb;
 use crate::sql::{holes, internal, scope_of, subtree, ESCAPE};
 
 /// D56 bounds reads: an unbounded page is how one caller takes the whole table.
-const MAX_PAGE: i32 = 500;
-const DEFAULT_PAGE: i32 = 50;
+///
+/// Every caller must get the same page shape from this service, so both
+/// ceilings below are a CONTRACT rather than a per-deployment knob (census
+/// 965). Recorded drift, not reconciled here: iam-db caps at 200; task-db
+/// and project-db at 500.
+const MAX_PAGE: i32 = 500; // ADR-0569-EXCEPTION(CB): contract bound, not a per-deployment knob (census 965)
+const DEFAULT_PAGE: i32 = 50; // ADR-0569-EXCEPTION(CB): contract bound, not a per-deployment knob (census 965)
 
 impl ProjectDb {
     /// THE load-bearing rpc. Every scoped write in the estate resolves its

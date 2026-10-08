@@ -22,15 +22,18 @@ repos:
   # at first install and never re-resolves it, so a moving tag would silently
   # freeze each machine at whatever it meant the day it first ran.
   - repo: https://github.com/yadgarhq/actions
-    # THE REV MOVES FROM v1.20.1 TO v1.22.0 FOR THE TWO IDS BELOW, and the whole
-    # block comes with it because pre-commit resolves one rev per repository
-    # entry. `git diff --stat v1.20.1 v1.22.0 -- hooks/ .pre-commit-hooks.yaml`
-    # is 1901 insertions and 0 deletions, touching only the new
-    # `hooks/chart_baseline.py` and the two manifest entries that publish it — so
-    # no hook already in this block changes behaviour. A second `repo:` entry
-    # pinning the same repository at a second rev was the alternative, and it is
-    # the drift the shared manifest exists to prevent.
-    rev: v1.22.0
+    # THE REV MOVES FROM v1.22.0 TO v1.31.0 (the C-A2 tag, ledger 965/1278,
+    # C-DB1), and the whole block comes with it because pre-commit resolves
+    # one rev per repository entry. `git diff --stat v1.22.0 v1.31.0 --
+    # hooks/ .pre-commit-hooks.yaml` touches `no_compiled_in_defaults.sh`
+    # (the widened ADR-0569 gate this unit's four hits were measured
+    # against), `helm_lint.py` (now reads `chart/ci/values.yaml`),
+    # `boot_reads_watched.py`, `no_test_skips.py`, `observe_coverage.py`, and
+    # publishes three new opt-in hooks this repository does not reference
+    # (`hermetic-git`, `seed-front-matter`, `seed-no-ask-prompt`) — adopting
+    # those is a separate unit's decision (ADR-0577: a published hook nobody
+    # references gates nothing), not this rev bump's.
+    rev: v1.31.0
     hooks:
       - id: gitleaks
       - id: prettier
