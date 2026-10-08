@@ -33,7 +33,15 @@ repos:
     # (`hermetic-git`, `seed-front-matter`, `seed-no-ask-prompt`) — adopting
     # those is a separate unit's decision (ADR-0577: a published hook nobody
     # references gates nothing), not this rev bump's.
-    rev: v1.31.0
+    #
+    # THEN v1.31.0 TO v1.34.0 (B-U5, actions#113). `git diff --stat v1.31.0
+    # v1.34.0 -- hooks/ .pre-commit-hooks.yaml` touches
+    # `boot_reads_watched.py` and its manifest entry only: the gate accepts a
+    # boot read made inside a library material, declared by the
+    # `ADR-0523-LIBRARY-WATCHED` marker in `src/rotate.rs`. B-U5 moved this
+    # binary's only direct boot read into `yadgar_lifecycle::serve_tls`, so
+    # without it the gate judged zero reads and refused.
+    rev: v1.34.0
     hooks:
       - id: gitleaks
       - id: prettier

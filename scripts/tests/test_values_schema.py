@@ -64,16 +64,14 @@ OPEN = frozenset(
 # A template reads these; `values.yaml` does not declare them (brief §2 step 2,
 # §3.6). Declared as leaves inside their (now closed) parent block.
 #
-# `tls.clientAuth`, `tls.clientCaSecret` and `tls.clientCaSecretKey` join this
-# set for B-U5E (folded into C-DB1, ledger 1278): the schema declares them,
-# `templates/render-checks.yaml` validates them when present, and the binary
-# reads none of them yet — there is nothing for `values.yaml` to default,
-# same shape as `image.digest` above (a template reads it; nothing ships it).
+# `tls.clientCaSecret` and `tls.clientCaSecretKey` joined this set for B-U5E
+# (folded into C-DB1, ledger 1278): a template reads them only when a client
+# CA is named, and there is nothing for `values.yaml` to default. Their
+# sibling `tls.clientAuth` moved to `REQUIRED_NO_DEFAULT` with B-U5.
 EXTRAS = frozenset(
     {
         "image.digest",
         "networkPolicy.scrapeFrom.namespace",
-        "tls.clientAuth",
         "tls.clientCaSecret",
         "tls.clientCaSecretKey",
     }
@@ -111,7 +109,15 @@ RETAINED_TYPED_LEAVES = frozenset(
 # is in its parent block's `required` list, which `RETAINED_TYPED_LEAVES`'s
 # does not (that property is `database`'s own pre-existing test, in
 # `test_migration_lock_schema.py`).
-REQUIRED_NO_DEFAULT = frozenset({"tls.enabled"})
+#
+# `tls.clientAuth` (B-U5, ADR-0854 extending ADR-0845) joins it: the binary
+# refuses an absent `LISTEN_TLS_CLIENT_AUTH`, so the leaf is in `tls.required`.
+# UNLIKE `tls.enabled` ITS LEAF STAYS UNTYPED (`REQUIRED_UNTYPED` below): its
+# type and its three values are the K-1 guard's job in
+# `templates/render-checks.yaml` (ADR-0847, coordinator ruling R1), because an
+# `enum` here pre-empts that guard's named sentence for a bare `off`.
+REQUIRED_NO_DEFAULT = frozenset({"tls.enabled", "tls.clientAuth"})
+REQUIRED_UNTYPED = frozenset({"tls.clientAuth"})
 
 
 def load_schema() -> dict:
@@ -207,7 +213,9 @@ def structural_failures(schema: dict, values: dict) -> list[str]:
         if node != {}:
             failures.append(f"OPEN path '{path}' is not a bare {{}} in the schema: {node}")
 
-    for path in sorted(schema_leaves - RETAINED_TYPED_LEAVES - REQUIRED_NO_DEFAULT - OPEN):
+    for path in sorted(
+        schema_leaves - RETAINED_TYPED_LEAVES - (REQUIRED_NO_DEFAULT - REQUIRED_UNTYPED) - OPEN
+    ):
         node = schema_node(schema, path)
         if node != {}:
             failures.append(f"leaf '{path}' should be untyped {{}}, got {node}")
@@ -223,7 +231,7 @@ def structural_failures(schema: dict, values: dict) -> list[str]:
     # absence (or a null) reach the template unrefused by the schema.
     for path in sorted(REQUIRED_NO_DEFAULT):
         node = schema_node(schema, path)
-        if node is None or node == {}:
+        if path not in REQUIRED_UNTYPED and (node is None or node == {}):
             failures.append(f"required-no-default leaf '{path}' lost its type")
         parent_path, _, leaf = path.rpartition(".")
         parent = schema_node(schema, parent_path)
@@ -283,6 +291,23 @@ def test_mutation_dropping_tls_enabled_type_reddens() -> None:
     mutated = copy.deepcopy(SCHEMA)
     mutated["properties"]["tls"]["properties"]["enabled"] = {}
     assert structural_failures(mutated, VALUES) != []
+
+
+def test_mutation_dropping_client_auth_from_tls_required_reddens() -> None:
+    """B-U5's mutation: drop `clientAuth` from `tls.required` and the
+    structural test must redden, independently of `enabled`."""
+    mutated = copy.deepcopy(SCHEMA)
+    mutated["properties"]["tls"]["required"].remove("clientAuth")
+    assert structural_failures(mutated, VALUES) != []
+
+
+def test_mutation_adding_a_client_auth_enum_reddens() -> None:
+    """Ruling R1's mutation: an `enum` (or `type`) on the leaf pre-empts the
+    render check's sentence, so the structural test refuses it."""
+    for leaf in ({"enum": ["off", "optional", "required"]}, {"type": "string"}):
+        mutated = copy.deepcopy(SCHEMA)
+        mutated["properties"]["tls"]["properties"]["clientAuth"] = leaf
+        assert structural_failures(mutated, VALUES) != [], leaf
 
 
 def test_dropping_tls_required_on_disk_degrades_the_bare_lint_message(tmp_path) -> None:
@@ -532,3 +557,59 @@ def test_lint_strict_refuses_the_same_root_typo_naming_the_key() -> None:
     assert result.returncode != 0, "helm lint --strict passed a root-level typo"
     combined = result.stdout + result.stderr
     assert "[ERROR]" in combined and "autoscalng" in combined, combined
+
+
+# ── B-U5: `tls.clientAuth` at the schema layer ──────────────────────────────
+#
+# ASSERTED ON THE WRAPPER AND THE PATH (B-U5E-convention item 9), never on
+# helm's per-leaf wording, which differs between 3.18.4 and 4.3.0.
+SCHEMA_WRAPPER = "values don't meet the specifications of the schema"
+
+
+def schema_refusal(body: str, tmp_path: Path) -> str:
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(body)
+    result = render(CHART, "--values", str(overlay))
+    assert result.returncode != 0, f"{body!r} rendered"
+    assert SCHEMA_WRAPPER in result.stderr, result.stderr
+    return result.stderr
+
+
+def test_an_absent_client_auth_is_a_schema_refusal_at_the_tls_path() -> None:
+    """Rendered WITHOUT `chart/ci/values.yaml`, which states the key."""
+    from test_render_checks import CHART_NAME, helm
+
+    result = helm("template", CHART_NAME, str(CHART), "--set", "tls.enabled=true")
+    assert result.returncode != 0, "an absent tls.clientAuth rendered"
+    assert SCHEMA_WRAPPER in result.stderr, result.stderr
+    assert "clientAuth" in result.stderr, result.stderr
+    assert "'/tls'" in result.stderr or "- tls:" in result.stderr, result.stderr
+
+
+def test_a_wrong_client_auth_value_is_the_render_checks_refusal_not_the_schemas(
+    tmp_path,
+) -> None:
+    """R1: with the schema ON, an unknown mode, a bare `off` (YAML's `false`)
+    and a null all pass the schema and are refused by the render check."""
+    overlay = tmp_path / "overlay.yaml"
+    for body in (
+        "tls: {enabled: true, clientAuth: bogus}\n",
+        "tls: {enabled: true, clientAuth: off}\n",
+        "tls: {enabled: true, clientAuth: null}\n",
+    ):
+        overlay.write_text(body)
+        result = render(CHART, "--values", str(overlay))
+        assert result.returncode != 0, f"{body!r} rendered"
+        assert SCHEMA_WRAPPER not in result.stderr, result.stderr
+        assert "project-db: tls.clientAuth" in result.stderr, result.stderr
+
+
+def test_each_client_auth_mode_passes_the_schema(tmp_path) -> None:
+    overlay = tmp_path / "modes.yaml"
+    for mode in ("off", "optional", "required"):
+        overlay.write_text(
+            f'tls: {{enabled: true, clientAuth: "{mode}", '
+            "clientCaSecret: proj-client-ca, clientCaSecretKey: ca.crt}\n"
+        )
+        result = render(CHART, "--values", str(overlay))
+        assert result.returncode == 0, result.stderr

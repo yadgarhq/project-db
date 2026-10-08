@@ -47,7 +47,14 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # about. Taking the watcher without `drain_within` is the bug rather than half
 # the fix — tokio never unregisters a libc signal handler, so once the rotation
 # arm wins the `select!` a later SIGTERM is swallowed and only SIGKILL remains.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.17" }
+#
+# `serve-tls` (B-U5, ADR-0846, ADR-0852): the listener's transport is the
+# crate's `ServerTls`, not a local copy. It is the one implementation of
+# client-certificate verification the six gRPC servers share, so a security
+# control cannot drift six ways. `rotate` stays on through the default
+# features, and the crate implements `Material` for `ServerTls` there, so the
+# client CA joins the ADR-0523 watch set exactly when it is read.
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.20", features = ["serve-tls"] }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
