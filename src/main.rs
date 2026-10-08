@@ -118,8 +118,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // decoded, the certificate matched against its key. A deployment that asked
     // for TLS and got the mount wrong exits here, without opening a socket and
     // without touching the engine. D69 puts the refusals first, and this one is
-    // cheaper than the probe.
-    let tls = boot::ServeTls::from_env(boot::LISTEN).map_err(|e| e.to_string())?;
+    // cheaper than the probe. `yadgar_lifecycle::serve_tls` (B-U5): the
+    // client-auth mode is read and, for `optional`/`required`, the client CA
+    // is parsed here too.
+    let tls = boot::listener_tls(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
     let server = boot::server(tls.as_ref()).map_err(|e| e.to_string())?;
 
     // The credential never arrives as an environment variable — it is a mounted
@@ -207,7 +209,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn serve(
     mut server: tonic::transport::Server,
     pool: sqlx::MySqlPool,
-    tls: Option<boot::ServeTls>,
+    tls: Option<boot::ServerTls>,
     tls_inputs: rotate::Inputs,
     schedule: rotate::Schedule,
 ) -> Result<(), Box<dyn std::error::Error>> {

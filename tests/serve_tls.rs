@@ -23,6 +23,14 @@
 //! is no line in this repository to mutate, and saying so is more honest than
 //! dressing it as coverage.
 //!
+//! CLIENT AUTHENTICATION IS PROVED THE SAME WAY (B-U5, ADR-0846, ADR-0852).
+//! The listener is `yadgar_lifecycle::serve_tls::ServerTls` now, read through
+//! `boot::listener_tls`, and `LISTEN_TLS_CLIENT_AUTH` decides whether a caller
+//! must present a certificate. `required` is proved by a real client that
+//! presents none (refused), one signed by the configured authority (answered)
+//! and one signed by a stranger (refused); `off` by a client that presents none
+//! and is answered.
+//!
 //! CERTIFICATES ARE MINTED PER RUN. A fixture key committed to the repository is
 //! a secret committed to the repository, and it expires on a date nobody is
 //! watching.
@@ -48,19 +56,22 @@ use rcgen::{
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::{http, Service};
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
-use yadgar_project_db::boot::{self, BootError, ServeTls, LISTEN};
+use yadgar_project_db::boot::{self, BootError, ServerTls};
 
 /// The name the test certificates are issued for, and the name the rig listens
 /// on.
 const SERVED_NAME: &str = "localhost";
 
-/// A certificate authority and one certificate it issued.
+/// A certificate authority, the server certificate it issued, and a client
+/// certificate it issued.
 struct Pki {
     ca_pem: String,
     cert_pem: String,
     key_pem: String,
+    client_cert_pem: String,
+    client_key_pem: String,
 }
 
 /// Mint a CA and a server certificate for `san`.
@@ -80,15 +91,27 @@ fn pki(san: &str) -> Pki {
     params.distinguished_name.push(DnType::CommonName, san);
     let cert = params.signed_by(&key, &ca).unwrap();
 
+    // THE CALLER'S LEAF: `clientAuth` EKU, the shape `platform`'s issuer
+    // writes for a client Secret.
+    let client_key = KeyPair::generate().unwrap();
+    let mut client_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    client_params
+        .distinguished_name
+        .push(DnType::CommonName, "yadgar-project-db test caller");
+    let client_cert = client_params.signed_by(&client_key, &ca).unwrap();
+
     Pki {
         ca_pem: ca.pem(),
         cert_pem: cert.pem(),
         key_pem: key.serialize_pem(),
+        client_cert_pem: client_cert.pem(),
+        client_key_pem: client_key.serialize_pem(),
     }
 }
 
 /// A file that deletes itself, so a certificate and a key can be handed over as
-/// PATHS — which is the only shape [`ServeTls`] accepts, and the reason it
+/// PATHS — which is the only shape [`ServerTls`] accepts, and the reason it
 /// accepts it (D80).
 struct TempPem(PathBuf);
 
@@ -204,19 +227,28 @@ impl Drop for TempPem {
     }
 }
 
-/// Build a [`ServeTls`] through the SAME lookup seam `main` reads the
-/// environment with, so these cases exercise the shipped path rather than a
-/// constructor built for them.
-fn serve_tls(cert: &Path, key: &Path) -> ServeTls {
+/// Build a [`ServerTls`] through the SAME seam `main` reads the environment
+/// with — `boot::listener_tls` — so these cases exercise the shipped path
+/// rather than a constructor built for them. Client auth `off`.
+fn serve_tls(cert: &Path, key: &Path) -> ServerTls {
+    listener(cert, key, "off", None)
+}
+
+/// The same, with a client-auth mode and (for a verifying mode) the authority
+/// a caller's certificate is checked against.
+fn listener(cert: &Path, key: &Path, mode: &str, client_ca: Option<&Path>) -> ServerTls {
     let cert = cert.display().to_string();
     let key = key.display().to_string();
-    ServeTls::from_lookup(LISTEN, |k| match k {
+    let client_ca = client_ca.map(|p| p.display().to_string());
+    boot::listener_tls(|k| match k {
         "LISTEN_TLS_ENABLED" => Some("1".to_string()),
         "LISTEN_TLS_CERT_FILE" => Some(cert.clone()),
         "LISTEN_TLS_KEY_FILE" => Some(key.clone()),
+        "LISTEN_TLS_CLIENT_AUTH" => Some(mode.to_string()),
+        "LISTEN_TLS_CLIENT_CA_FILE" => client_ca.clone(),
         _ => None,
     })
-    .expect("a certificate and a key enable TLS")
+    .expect("a certificate, a key and a mode enable TLS")
     .expect("the flag is set")
 }
 
@@ -224,7 +256,7 @@ fn serve_tls(cert: &Path, key: &Path) -> ServeTls {
 /// port. `Routes::default()` answers every method with `Unimplemented`, which is
 /// the whole of what these cases need: the question each asks is whether a
 /// request reached the server at all.
-async fn serve_on_localhost(tls: Option<&ServeTls>) -> u16 {
+async fn serve_on_localhost(tls: Option<&ServerTls>) -> u16 {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((SERVED_NAME, 0))
         .await
         .unwrap()
@@ -328,7 +360,7 @@ async fn a_permanent_failure_on_the_first_address_is_reported_not_retried() {
     bind_one_port_on_every_address(&addrs).await;
 }
 
-fn spawn(listener: TcpListener, tls: Option<&ServeTls>) {
+fn spawn(listener: TcpListener, tls: Option<&ServerTls>) {
     let mut builder = boot::server(tls).expect("a usable identity");
     let router = builder.add_routes(tonic::service::Routes::default());
     tokio::spawn(async move {
@@ -380,11 +412,25 @@ async fn request(mut channel: Channel) -> Result<u16, String> {
     }
 }
 
-/// Reach the listener the way a TLS client does, verifying against `ca_pem`.
+/// Reach the listener the way a TLS client does, verifying against `ca_pem`
+/// and presenting no certificate of its own.
 async fn over_tls(port: u16, ca_pem: &str) -> Result<u16, String> {
-    let tls = ClientTlsConfig::new()
+    presenting(port, ca_pem, None).await
+}
+
+/// Reach the listener as a TLS client that presents `identity` — a client
+/// certificate and its key, as PEM — when one is given.
+async fn presenting(
+    port: u16,
+    ca_pem: &str,
+    identity: Option<(&str, &str)>,
+) -> Result<u16, String> {
+    let mut tls = ClientTlsConfig::new()
         .ca_certificate(Certificate::from_pem(ca_pem))
         .domain_name(SERVED_NAME);
+    if let Some((cert, key)) = identity {
+        tls = tls.identity(Identity::from_pem(cert, key));
+    }
     let channel = Endpoint::from_shared(format!("https://{SERVED_NAME}:{port}"))
         .unwrap()
         .tls_config(tls)
@@ -478,13 +524,13 @@ async fn a_certificate_that_cannot_be_read_refuses_the_boot() {
     let tls = serve_tls(&missing, key.path());
     let error = boot::server(Some(&tls)).expect_err("a missing certificate must refuse");
     assert!(
-        matches!(error, BootError::TlsUnreadable { .. }),
-        "{error:?}"
+        matches!(error, BootError::ListenerTls { .. }),
+        "a missing certificate must be the listener's refusal"
     );
     let message = error.to_string();
     assert!(
         message.contains("yadgar-project-db-no-such-cert-31c7ae.pem"),
-        "the message must name the file that was wrong: {message}"
+        "the message must name the file that was wrong"
     );
 }
 
@@ -499,13 +545,13 @@ async fn a_private_key_that_cannot_be_read_refuses_the_boot() {
     let tls = serve_tls(cert.path(), &missing);
     let error = boot::server(Some(&tls)).expect_err("a missing private key must refuse");
     assert!(
-        matches!(error, BootError::TlsUnreadable { .. }),
-        "{error:?}"
+        matches!(error, BootError::ListenerTls { .. }),
+        "a missing private key must be the listener's refusal"
     );
     let message = error.to_string();
     assert!(
         message.contains("yadgar-project-db-no-such-key-8de402.pem"),
-        "the message must name the file that was wrong: {message}"
+        "the message must name the file that was wrong"
     );
 }
 
@@ -523,7 +569,7 @@ async fn an_undecodable_certificate_refuses_the_boot() {
         let tls = serve_tls(cert.path(), key.path());
         let outcome = boot::server(Some(&tls));
         assert!(
-            matches!(outcome, Err(BootError::TlsUnusable { .. })),
+            matches!(outcome, Err(BootError::ListenerTls { .. })),
             "a certificate file containing {contents:?} must refuse the boot"
         );
     }
@@ -540,7 +586,7 @@ async fn an_undecodable_private_key_refuses_the_boot() {
         let tls = serve_tls(cert.path(), key.path());
         let outcome = boot::server(Some(&tls));
         assert!(
-            matches!(outcome, Err(BootError::TlsUnusable { .. })),
+            matches!(outcome, Err(BootError::ListenerTls { .. })),
             "a key file containing {contents:?} must refuse the boot"
         );
     }
@@ -559,8 +605,8 @@ async fn a_certificate_and_a_key_that_do_not_match_refuse_the_boot() {
     let tls = serve_tls(cert.path(), key.path());
     let outcome = boot::server(Some(&tls));
     assert!(
-        matches!(outcome, Err(BootError::TlsUnusable { .. })),
-        "a certificate that does not belong to the key must refuse the boot: {outcome:?}"
+        matches!(outcome, Err(BootError::ListenerTls { .. })),
+        "a certificate that does not belong to the key must refuse the boot"
     );
 }
 
@@ -608,18 +654,124 @@ async fn the_refusal_names_the_reason_rather_than_just_transport_error() {
     let key = TempPem::with(&other.key_pem);
 
     let tls = serve_tls(cert.path(), key.path());
-    let Err(BootError::TlsUnusable { detail, .. }) = boot::server(Some(&tls)) else {
+    let Err(BootError::ListenerTls { detail }) = boot::server(Some(&tls)) else {
         panic!("a certificate that does not belong to the key must refuse the boot");
     };
 
     assert!(
         detail.contains("keys may not be consistent"),
         "the detail must carry the layer UNDER tonic's `transport error`, which is \
-         the only part naming what was wrong; got: {detail:?}"
+         the only part naming what was wrong"
     );
     assert_ne!(
         detail.trim(),
         "transport error",
         "the head of the chain alone says nothing an operator can act on"
+    );
+}
+
+/// A listener under `required`, verifying callers against `issuer`'s
+/// authority. The files live as long as the returned guards.
+async fn required_listener(issuer: &Pki) -> (u16, [TempPem; 3]) {
+    let cert = TempPem::with(&issuer.cert_pem);
+    let key = TempPem::with(&issuer.key_pem);
+    let ca = TempPem::with(&issuer.ca_pem);
+    let tls = listener(cert.path(), key.path(), "required", Some(ca.path()));
+    let port = serve_on_localhost(Some(&tls)).await;
+    (port, [cert, key, ca])
+}
+
+/// **`required` REFUSES A CALLER WITH NO CERTIFICATE** (ADR-0852). The
+/// caller trusts the server and completes its half of the handshake; the
+/// request still never reaches the service, because the listener demanded a
+/// certificate and was shown none.
+///
+/// MUTATION: set `LISTEN_TLS_CLIENT_AUTH` to `off` in `required_listener`
+/// and this case answers 200.
+#[tokio::test]
+async fn required_refuses_a_caller_that_presents_no_certificate() {
+    let p = pki(SERVED_NAME);
+    let (port, _files) = required_listener(&p).await;
+
+    let outcome = presenting(port, &p.ca_pem, None).await;
+    assert!(
+        outcome.is_err(),
+        "a required listener must refuse a caller presenting no certificate"
+    );
+}
+
+/// `required` ANSWERS A CALLER PRESENTING A CERTIFICATE THE CONFIGURED
+/// AUTHORITY ISSUED. Without this case, a listener that refused everybody
+/// would pass the one above.
+#[tokio::test]
+async fn required_answers_a_caller_whose_certificate_the_authority_issued() {
+    let p = pki(SERVED_NAME);
+    let (port, _files) = required_listener(&p).await;
+
+    let identity = (p.client_cert_pem.as_str(), p.client_key_pem.as_str());
+    assert_eq!(
+        presenting(port, &p.ca_pem, Some(identity)).await,
+        Ok(200),
+        "a caller presenting a certificate from the configured authority must be answered"
+    );
+}
+
+/// `required` REFUSES A CERTIFICATE FROM ANOTHER AUTHORITY: what an impostor
+/// presents. Verification that accepted any parseable certificate would pass
+/// both cases above.
+#[tokio::test]
+async fn required_refuses_a_caller_whose_certificate_another_authority_issued() {
+    let p = pki(SERVED_NAME);
+    let (port, _files) = required_listener(&p).await;
+
+    let stranger = pki(SERVED_NAME);
+    let identity = (
+        stranger.client_cert_pem.as_str(),
+        stranger.client_key_pem.as_str(),
+    );
+    let outcome = presenting(port, &p.ca_pem, Some(identity)).await;
+    assert!(
+        outcome.is_err(),
+        "a caller certificate from an authority the listener does not trust must be refused"
+    );
+}
+
+/// `off` SERVES A CALLER THAT PRESENTS NO CERTIFICATE: every caller in the
+/// estate today, and the value the parent chart states until a hop is staged
+/// to `optional` and then `required`.
+#[tokio::test]
+async fn off_answers_a_caller_that_presents_no_certificate() {
+    let p = pki(SERVED_NAME);
+    let cert = TempPem::with(&p.cert_pem);
+    let key = TempPem::with(&p.key_pem);
+    let port = serve_on_localhost(Some(&listener(cert.path(), key.path(), "off", None))).await;
+
+    assert_eq!(
+        presenting(port, &p.ca_pem, None).await,
+        Ok(200),
+        "client auth off must answer a caller presenting no certificate"
+    );
+}
+
+/// A CLIENT CA THAT HOLDS NO CERTIFICATE REFUSES THE BOOT, naming the file —
+/// rather than building a verifier that can never accept anybody.
+#[tokio::test]
+async fn an_empty_client_ca_refuses_the_boot_naming_the_file() {
+    let p = pki(SERVED_NAME);
+    let cert = TempPem::with(&p.cert_pem);
+    let key = TempPem::with(&p.key_pem);
+    let ca = TempPem::with("");
+    let tls = listener(cert.path(), key.path(), "required", Some(ca.path()));
+
+    let error = boot::server(Some(&tls)).expect_err("an empty client CA must refuse");
+    let file = ca
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        error.to_string().contains(&file),
+        "the refusal must name the client CA file"
     );
 }

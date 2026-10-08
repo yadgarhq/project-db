@@ -840,6 +840,9 @@ pub fn boot_cleartext_env(db_name: &str, password_file: &Path) -> Vec<(String, S
         ("LISTEN".to_string(), "127.0.0.1:0".to_string()),
         ("METRICS_LISTEN".to_string(), "127.0.0.1:0".to_string()),
         ("LISTEN_TLS_ENABLED".to_string(), "0".to_string()),
+        // B-U5 (ADR-0854): the client-auth mode has no default either, and a
+        // cleartext listener can only be `off`.
+        ("LISTEN_TLS_CLIENT_AUTH".to_string(), "off".to_string()),
     ]
 }
 

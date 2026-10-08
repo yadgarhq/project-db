@@ -344,17 +344,27 @@ tls:
   # is free to call them something else.
   certSecretKey: tls.crt
   keySecretKey: tls.key
-  # ── MUTUAL TLS, DECLARED BUT NOT YET ENFORCED (B-U5E expand, folded into
-  # C-DB1) ─────────────────────────────────────────────────────────────────
+  # ── MUTUAL TLS: HOW THIS POD VERIFIES ITS CALLERS (B-U5, ADR-0852) ──────
   #
-  # NO KEYS WRITTEN HERE. `chart/values.schema.json` declares `clientAuth`,
-  # `clientCaSecret` and `clientCaSecretKey` as leaves this chart will accept,
-  # and `templates/render-checks.yaml` refuses `clientAuth: optional` or
-  # `clientAuth: required` for now — the binary does not read either variable
-  # yet (ledger 1278; B-U5 is the contract that adopts
-  # `yadgar_lifecycle::serve_tls` and enforces the mode). Writing `off` here
-  # ahead of that contract would be a no-op with an extra line to keep in
-  # sync; omitting the keys is `off` already.
+  # clientAuth: "off" | "optional" | "required"
+  #
+  # NO DEFAULT, like `enabled` above (ADR-0854, extending ADR-0845). It renders
+  # LISTEN_TLS_CLIENT_AUTH, which the binary refuses to boot without, whether
+  # or not TLS is on; `chart/values.schema.json` lists it in `tls.required`.
+  # QUOTE IT: YAML reads a bare off as the boolean false, which is refused.
+  #
+  #   off       no client certificate is requested. The emergency value, and
+  #             the only one a cleartext listener (`enabled: false`) accepts.
+  #   optional  a presented certificate is verified; a caller presenting none
+  #             is still answered. A staging step, not a control.
+  #   required  every caller must present a certificate that verifies.
+  #
+  # clientCaSecret: the Secret holding the authority callers' certificates are
+  # verified against, mounted at /var/run/config/client-ca/ca.crt and named by
+  # LISTEN_TLS_CLIENT_CA_FILE. `optional` and `required` refuse to render
+  # without it. Every certificate in the bundle is an anchor, so an old and a
+  # new authority together carry a CA rotation.
+  # clientCaSecretKey: the key inside that Secret holding the bundle.
 
 # D68: scale on CONCURRENCY, not CPU. A -db waits on MariaDB and a logic service
 # waits on its -db, so both saturate at low CPU — a CPU-driven HPA stays quiet

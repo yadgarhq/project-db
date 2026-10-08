@@ -45,7 +45,7 @@ use rcgen::{
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
 
-use yadgar_project_db::boot::{self, ServeTls};
+use yadgar_project_db::boot::{self, ServerTls};
 use yadgar_project_db::rotate::{self, Configuration, Presented};
 
 /// The leaf's expiry, and the issuing authority's — DELIBERATELY DIFFERENT and
@@ -170,9 +170,9 @@ fn configuration() -> Configuration {
 }
 
 /// The listener's transport built the way a DEPLOYMENT builds it — out of the
-/// three variables — rather than by assembling the struct. A test that bypassed
-/// `from_lookup` would leave the reading of those names unproven.
-fn listener(mount: &Mount) -> ServeTls {
+/// variables — rather than by assembling the struct. A test that bypassed
+/// `boot::listener_tls` would leave the reading of those names unproven.
+fn listener(mount: &Mount) -> ServerTls {
     let vars = [
         ("LISTEN_TLS_ENABLED", "1".to_string()),
         (
@@ -183,8 +183,9 @@ fn listener(mount: &Mount) -> ServeTls {
             "LISTEN_TLS_KEY_FILE",
             mount.at("tls-key.pem").display().to_string(),
         ),
+        ("LISTEN_TLS_CLIENT_AUTH", "off".to_string()),
     ];
-    ServeTls::from_lookup(boot::LISTEN, |key| {
+    boot::listener_tls(|key| {
         vars.iter()
             .find(|(k, _)| *k == key)
             .map(|(_, v)| v.to_string())

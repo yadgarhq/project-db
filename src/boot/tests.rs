@@ -329,153 +329,181 @@ fn an_empty_knob_refuses_with_a_message_of_its_own() {
 /// lookup.
 const SENTINEL_CERT: &str = "/etc/yadgar/okapi-3f19/serving.crt";
 const SENTINEL_KEY: &str = "/etc/yadgar/okapi-3f19/serving.key";
+const SENTINEL_CLIENT_CA: &str = "/etc/yadgar/okapi-3f19/client-ca.crt";
 
-/// **ADR-0845.** Nothing configured used to mean the cleartext listener —
-/// exactly the compiled-in default ADR-0845 names as the most dangerous
-/// shape in the estate. It now refuses, naming the variable and the chart
-/// key, rather than falling back to anything.
-#[test]
-fn an_absent_tls_enabled_refuses_naming_the_variable_and_the_chart_key() {
-    let err = ServeTls::from_lookup(LISTEN, env_of(&[]))
-        .expect_err("an absent LISTEN_TLS_ENABLED must refuse the boot");
-    let message = err.to_string();
-    assert!(matches!(err, BootError::MissingKnob(_)), "{message}");
-    assert!(message.contains("LISTEN_TLS_ENABLED"), "{message}");
-    assert!(message.contains("tls.enabled"), "{message}");
-}
-
-/// Set-but-empty is its own message, same discipline [`env_required`] holds
-/// for every other knob.
-#[test]
-fn an_empty_tls_enabled_refuses_with_its_own_message() {
-    let empty = ServeTls::from_lookup(LISTEN, env_of(&[("LISTEN_TLS_ENABLED", "")]))
-        .expect_err("an empty LISTEN_TLS_ENABLED must refuse the boot")
-        .to_string();
-    let absent = ServeTls::from_lookup(LISTEN, env_of(&[]))
-        .expect_err("an absent LISTEN_TLS_ENABLED must refuse the boot")
-        .to_string();
-    assert!(empty.contains("set but EMPTY"), "{empty}");
-    assert!(absent.contains("NOT SET"), "{absent}");
-    assert_ne!(empty, absent, "empty and absent must not share one message");
-}
-
-/// A certificate alongside an EXPLICIT `"0"` is the REVERTED state, not an
-/// error. The flag is the lever; leaving the paths in place is how it gets
-/// pulled back. (Before ADR-0845 this was reachable with the flag merely
-/// absent; now the flag must be explicitly off.)
-#[test]
-fn a_certificate_alongside_an_explicit_zero_does_not_enable_the_listeners_tls() {
-    let vars = [
-        ("LISTEN_TLS_ENABLED", "0"),
-        ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
-        ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
-    ];
-    assert_eq!(ServeTls::from_lookup(LISTEN, env_of(&vars)).unwrap(), None);
-}
-
-/// Exactly "1" turns it on, exactly "0" turns it off, and census H1's list of
-/// values this module used to treat as off now refuses instead of guessing.
-#[test]
-fn only_exactly_one_enables_the_listeners_tls_and_every_other_spelling_refuses() {
-    let vars_for = |value: &'static str| {
-        [
-            ("LISTEN_TLS_ENABLED", value),
-            ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
-            ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
-        ]
-    };
-
-    assert_eq!(
-        ServeTls::from_lookup(LISTEN, env_of(&vars_for("0"))).unwrap(),
-        None,
-        "\"0\" must mean cleartext"
-    );
-
-    for value in ["false", "no", "true", "yes"] {
-        let err = ServeTls::from_lookup(LISTEN, env_of(&vars_for(value)))
-            .expect_err("{value:?} must refuse rather than guess which way it meant");
-        assert!(
-            matches!(
-                err,
-                BootError::TlsEnabledInvalid {
-                    prefix: "LISTEN",
-                    ..
-                }
-            ),
-            "{value:?}: {err}"
-        );
-        assert!(err.to_string().contains(value), "{value:?}: {err}");
-        // THE CHART KEY, NOT ONLY THE VALUE (coordinator re-review,
-        // project-db#54): a mutation that dropped "The chart renders it as
-        // tls.enabled." from `TlsEnabledInvalid`'s message would still pass
-        // the assertion above, naming the bad value but not where an
-        // operator fixes it.
-        assert!(err.to_string().contains("tls.enabled"), "{value:?}: {err}");
+/// THE LISTENER IS `yadgar_lifecycle::serve_tls::ServerTls` NOW (B-U5,
+/// ADR-0846), and the crate's own suite proves its matrix. What only THIS
+/// repository can prove is its wiring: that [`listener_tls`] reads the
+/// `LISTEN` prefix and names the `tls` chart block, so every refusal an
+/// operator meets points at the chart key this chart actually renders.
+///
+/// The assertion messages are static strings on purpose: a refusal that
+/// interpolates an error naming certificate files is what CodeQL's
+/// cleartext-logging rule flags.
+fn refusal(pairs: &[(&str, &str)]) -> String {
+    match listener_tls(env_of(pairs)) {
+        Err(err @ BootError::ListenerTls { .. }) => err.to_string(),
+        Err(_) => panic!("the listener's refusal must be BootError::ListenerTls"),
+        Ok(_) => panic!("this environment must refuse the boot"),
     }
 }
 
-/// THE FAILURE THAT MUST NOT DEGRADE. Asking for TLS and naming neither file
-/// is a deployment mistake, and the answer to it is an error rather than a
-/// plaintext listener. The message names the half that is missing.
+/// **ADR-0845.** Nothing configured used to mean the cleartext listener. It
+/// refuses, naming the variable and the chart key.
 #[test]
-fn asking_the_listener_for_tls_without_the_files_is_an_error() {
-    let missing_cert = [
-        ("LISTEN_TLS_ENABLED", "1"),
-        ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
-    ];
+fn an_absent_tls_enabled_refuses_naming_the_variable_and_the_chart_key() {
+    let message = refusal(&[("LISTEN_TLS_CLIENT_AUTH", "off")]);
     assert!(
-        matches!(
-            ServeTls::from_lookup(LISTEN, env_of(&missing_cert)),
-            Err(BootError::NoTlsCertFile("LISTEN"))
-        ),
-        "a missing certificate must be refused, not silently downgraded"
+        message.contains("LISTEN_TLS_ENABLED"),
+        "the refusal must name LISTEN_TLS_ENABLED"
     );
-
-    let missing_key = [
-        ("LISTEN_TLS_ENABLED", "1"),
-        ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
-    ];
     assert!(
-        matches!(
-            ServeTls::from_lookup(LISTEN, env_of(&missing_key)),
-            Err(BootError::NoTlsKeyFile("LISTEN"))
-        ),
-        "a missing private key must be refused, not silently downgraded"
+        message.contains("`tls.enabled`"),
+        "the refusal must name the chart key tls.enabled"
     );
 }
 
-/// Both paths reach the settings, proved with names the module could not
-/// have chosen for itself.
+/// **ADR-0854 (X-ADR-1).** `LISTEN_TLS_CLIENT_AUTH` has no default either:
+/// absent and empty both refuse, naming the variable AND the chart key, and
+/// they do so whether TLS is on or off.
 #[test]
-fn the_certificate_and_the_key_both_arrive() {
+fn an_absent_or_empty_client_auth_refuses_naming_the_variable_and_the_chart_key() {
+    for enabled in ["0", "1"] {
+        let base = [
+            ("LISTEN_TLS_ENABLED", enabled),
+            ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
+            ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
+        ];
+        let empty = [base[0], base[1], base[2], ("LISTEN_TLS_CLIENT_AUTH", "")];
+        for message in [refusal(&base), refusal(&empty)] {
+            assert!(
+                message.contains("LISTEN_TLS_CLIENT_AUTH"),
+                "an absent or empty mode must name LISTEN_TLS_CLIENT_AUTH"
+            );
+            assert!(
+                message.contains("`tls.clientAuth`"),
+                "an absent or empty mode must name the chart key tls.clientAuth"
+            );
+        }
+    }
+}
+
+/// Exactly `off`, `optional` or `required`. A case variant or a boolean
+/// spelling is how a typo becomes a posture, so it refuses by name.
+#[test]
+fn an_unknown_client_auth_refuses_naming_the_variable_and_the_chart_key() {
+    for value in ["Required", "on", "true", "false", "bogus"] {
+        let message = refusal(&[
+            ("LISTEN_TLS_ENABLED", "1"),
+            ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
+            ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
+            ("LISTEN_TLS_CLIENT_AUTH", value),
+        ]);
+        assert!(
+            message.contains("LISTEN_TLS_CLIENT_AUTH"),
+            "an unknown mode must name LISTEN_TLS_CLIENT_AUTH"
+        );
+        assert!(
+            message.contains("`tls.clientAuth`"),
+            "an unknown mode must name the chart key tls.clientAuth"
+        );
+        assert!(message.contains(value), "an unknown mode must quote it");
+    }
+}
+
+/// A verifying mode with no authority to verify against refuses, naming the
+/// CA variable and the chart key that fills it.
+#[test]
+fn a_verifying_mode_without_a_client_ca_refuses_naming_the_chart_key() {
+    for mode in ["optional", "required"] {
+        let message = refusal(&[
+            ("LISTEN_TLS_ENABLED", "1"),
+            ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
+            ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
+            ("LISTEN_TLS_CLIENT_AUTH", mode),
+        ]);
+        assert!(
+            message.contains("LISTEN_TLS_CLIENT_CA_FILE"),
+            "a verifying mode with no CA must name LISTEN_TLS_CLIENT_CA_FILE"
+        );
+        assert!(
+            message.contains("`tls.clientCaSecret`"),
+            "a verifying mode with no CA must name tls.clientCaSecret"
+        );
+    }
+}
+
+/// A cleartext listener cannot verify a client certificate, so a verifying
+/// mode beside `LISTEN_TLS_ENABLED=0` refuses rather than pretending.
+#[test]
+fn a_verifying_mode_on_a_cleartext_listener_refuses() {
+    for mode in ["optional", "required"] {
+        let message = refusal(&[
+            ("LISTEN_TLS_ENABLED", "0"),
+            ("LISTEN_TLS_CLIENT_AUTH", mode),
+            ("LISTEN_TLS_CLIENT_CA_FILE", SENTINEL_CLIENT_CA),
+        ]);
+        assert!(
+            message.contains("`tls.enabled`") && message.contains("`tls.clientAuth`"),
+            "a verifying mode on a cleartext listener must name both chart keys"
+        );
+    }
+}
+
+/// An EXPLICIT `"0"` with `off` is the cleartext listener, and a certificate
+/// left beside it is the reverted state rather than an error.
+#[test]
+fn an_explicit_zero_with_client_auth_off_serves_cleartext() {
+    let vars = [
+        ("LISTEN_TLS_ENABLED", "0"),
+        ("LISTEN_TLS_CLIENT_AUTH", "off"),
+        ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
+        ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
+    ];
+    assert!(
+        listener_tls(env_of(&vars))
+            .expect("\"0\" with off is a valid listener")
+            .is_none(),
+        "\"0\" must mean cleartext"
+    );
+}
+
+/// Every path reaches the settings, proved with names the module could not
+/// have chosen for itself — and the mode with them.
+#[test]
+fn the_certificate_the_key_the_mode_and_the_client_ca_all_arrive() {
     let vars = [
         ("LISTEN_TLS_ENABLED", "1"),
         ("LISTEN_TLS_CERT_FILE", SENTINEL_CERT),
         ("LISTEN_TLS_KEY_FILE", SENTINEL_KEY),
+        ("LISTEN_TLS_CLIENT_AUTH", "required"),
+        ("LISTEN_TLS_CLIENT_CA_FILE", SENTINEL_CLIENT_CA),
     ];
-    let tls = ServeTls::from_lookup(LISTEN, env_of(&vars))
-        .unwrap()
-        .expect("a flag, a certificate and a key enable TLS");
+    let tls = listener_tls(env_of(&vars))
+        .expect("a complete environment is a valid listener")
+        .expect("the flag is \"1\"");
     assert_eq!(tls.cert_file(), Path::new(SENTINEL_CERT));
     assert_eq!(tls.key_file(), Path::new(SENTINEL_KEY));
+    assert_eq!(tls.client_auth(), ClientAuth::Required);
+    assert_eq!(tls.client_ca_file(), Some(Path::new(SENTINEL_CLIENT_CA)));
 }
 
 /// The two directions cannot configure each other. `DB_SSL_MODE` decides how
 /// this module reaches its ENGINE and says nothing about what it serves, and
 /// a bare `TLS_ENABLED` belongs to neither — so it does not satisfy the
-/// prefixed `LISTEN_TLS_ENABLED` this function actually reads, and (since
-/// ADR-0845) an absent `LISTEN_TLS_ENABLED` refuses rather than defaulting.
+/// prefixed `LISTEN_TLS_ENABLED` this function actually reads.
 #[test]
 fn the_engines_transport_does_not_configure_the_listener() {
-    let vars = [
+    let message = refusal(&[
         ("DB_SSL_MODE", "verify-identity"),
         ("TLS_ENABLED", "1"),
         ("TLS_CERT_FILE", SENTINEL_CERT),
-    ];
-    let err = ServeTls::from_lookup(LISTEN, env_of(&vars))
-        .expect_err("a bare TLS_ENABLED must not satisfy LISTEN_TLS_ENABLED");
-    assert!(matches!(err, BootError::MissingKnob(_)), "{err}");
-    assert!(err.to_string().contains("LISTEN_TLS_ENABLED"), "{err}");
+        ("LISTEN_TLS_CLIENT_AUTH", "off"),
+    ]);
+    assert!(
+        message.contains("LISTEN_TLS_ENABLED"),
+        "a bare TLS_ENABLED must not satisfy LISTEN_TLS_ENABLED"
+    );
 }
 
 /// The crate returns one `io::Error` for both handlers, so what must not be

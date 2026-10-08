@@ -17,13 +17,14 @@
 //! without it.
 //!
 //! **The listener is the same argument, one hop further out.** `DB_SSL_MODE`
-//! decides how this module reaches its engine; [`ServeTls`] decides what
+//! decides how this module reaches its engine; [`ServerTls`] decides what
 //! `project` gets when it reaches this module. NEITHER DEFAULTS ANY MORE:
 //! `DB_SSL_MODE` is required and refuses the boot when unset (ADR-0569), and the
-//! listener's transport is a flag that is either set or absent. Both refuse
-//! rather than downgrade when asked for something they cannot deliver, and
-//! neither names an issuer, a CRD or a mesh (D80) — a flag and file paths is the
-//! whole of the configuration.
+//! listener's transport is two required variables, the switch and the
+//! client-auth mode (ADR-0845, ADR-0854). Both refuse rather than downgrade
+//! when asked for something they cannot deliver, and neither names an issuer, a
+//! CRD or a mesh (D80) — two switches and file paths are the whole of the
+//! configuration.
 //!
 //! **THERE IS NO `DB_REQUIRE_TLS` REFUSAL HERE, unlike in `task-db` and
 //! `iam-db`.** That refusal exists in those modules because they once READ the
@@ -59,7 +60,8 @@ const SSL_MODE_KEY: &str = "DB_SSL_MODE";
 const SSL_CA_KEY: &str = "DB_SSL_CA_FILE";
 
 /// The environment variables this module's own listener is configured from:
-/// `LISTEN_TLS_ENABLED`, `LISTEN_TLS_CERT_FILE` and `LISTEN_TLS_KEY_FILE`.
+/// `LISTEN_TLS_ENABLED`, `LISTEN_TLS_CERT_FILE`, `LISTEN_TLS_KEY_FILE`,
+/// `LISTEN_TLS_CLIENT_AUTH` and `LISTEN_TLS_CLIENT_CA_FILE`.
 ///
 /// Built from a PREFIX rather than written out three times, so the naming stays
 /// mechanical. `LISTEN` is already the variable holding the address this module
@@ -299,8 +301,8 @@ pub fn probe_connect_options(
 ///
 /// **A `map_err` RATHER THAN A `From` IMPL, deliberately.** [`BootError`] would
 /// need `From<std::io::Error>` for a bare `?` to work, and
-/// [`BootError::TlsUnreadable`] already carries an `io::Error` for an entirely
-/// different reason — so the blanket impl would let any unreadable file become a
+/// [`BootError::SignalHandler`] is not the only reason this module could meet an
+/// `io::Error` — so the blanket impl would let any unreadable file become a
 /// signal-handler refusal at whatever call site next wrote `?`.
 ///
 /// # Errors
@@ -314,56 +316,13 @@ pub fn shutdown() -> Result<impl std::future::Future<Output = ()>, BootError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum BootError {
-    #[error(
-        "{0}_TLS_ENABLED is set but {0}_TLS_CERT_FILE names no certificate. TLS was \
-         asked for, so this is a deployment mistake rather than a reason to open a \
-         plaintext listener — and it is NOT the same as leaving TLS off, which is the \
-         supported way to serve without one. Point {0}_TLS_CERT_FILE at the PEM \
-         certificate this module should present."
-    )]
-    NoTlsCertFile(&'static str),
-
-    #[error(
-        "{0}_TLS_ENABLED is set but {0}_TLS_KEY_FILE names no private key. A \
-         certificate without its key cannot complete a handshake, so this refuses \
-         rather than opening a plaintext listener. Point {0}_TLS_KEY_FILE at the PEM \
-         private key belonging to {0}_TLS_CERT_FILE."
-    )]
-    NoTlsKeyFile(&'static str),
-
-    #[error(
-        "{prefix}_TLS_ENABLED is {value:?}, which this module does not recognise. Set it to \
-         exactly \"1\" to serve with TLS or \"0\" to serve in cleartext — ADR-0845 accepts \
-         no other spelling, including \"true\"/\"false\"/\"yes\"/\"no\". The chart renders \
-         it as tls.enabled."
-    )]
-    TlsEnabledInvalid { prefix: &'static str, value: String },
-
-    #[error(
-        "the TLS {what} at {path} could not be read: {source}. TLS was asked for, so \
-         this module refuses to start rather than serving in cleartext. The usual \
-         cause is a Secret that was never mounted, or a key inside it under a \
-         different name than the chart selected."
-    )]
-    TlsUnreadable {
-        what: &'static str,
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error(
-        "the TLS certificate at {cert} and the private key at {key} were read but \
-         refused: {detail}. Both files exist, so this is their CONTENT: a PEM that \
-         decodes to no certificate at all, or a certificate that does not belong to \
-         the key beside it — what a half-finished rotation leaves behind. This module \
-         refuses to start rather than serving in cleartext."
-    )]
-    TlsUnusable {
-        cert: PathBuf,
-        key: PathBuf,
-        detail: String,
-    },
+    /// The listener's transport refused the boot
+    /// (`yadgar_lifecycle::serve_tls`, B-U5). `detail` is the crate's own
+    /// sentence, which names the variable AND the chart key (ADR-0845,
+    /// ADR-0854), or for an unusable identity the whole error chain flattened
+    /// once (ADR-0591). Nothing here downgrades to a cleartext listener.
+    #[error("{detail}")]
+    ListenerTls { detail: String },
 
     // NO `name` FIELD. `yadgar_lifecycle::shutdown` installs both handlers and
     // returns one `io::Error`, so WHICH of the two failed is not knowable here.
@@ -436,7 +395,7 @@ mod lock;
 pub use lock::{migration_lock, MIGRATION_LOCK_TIMEOUT_CHART_KEY, MIGRATION_LOCK_TIMEOUT_KEY};
 
 mod serve_tls;
-pub use serve_tls::{server, ServeTls};
+pub use serve_tls::{listener_tls, server, ClientAuth, ServerTls, TLS_CHART_KEY};
 
 #[cfg(test)]
 mod tests;
