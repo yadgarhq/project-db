@@ -10,7 +10,7 @@ description = "The project module's -db twin: the registry of projects, serving 
 # Pinned by RELEASE TAG, not by branch — a published tag never moves in this
 # organisation, so `v0.2.0` names exactly one commit for as long as it exists
 # (the same reasoning that pins images by digest (D61) and actions by SHA (D62)).
-yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.3.0" }
+yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.4.0" }
 # In tonic 0.14 prost codegen moved out to tonic-prost; there is no "prost"
 # feature on tonic itself.
 tonic = { version = "0.14", default-features = false, features = [
@@ -87,6 +87,20 @@ tokio-stream = { version = "0.1", features = ["net"] }
 # repository is a secret in the repository, and it expires on a date nobody is
 # watching.
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+# `tests/chart_request_deadline.rs` pins `database.acquireTimeoutSeconds`'s
+# schema bound against the caller's own request deadline, so the two cannot
+# drift apart silently (ledger C-DB2, ADR-0837, M-audit-C). TAG-PINNED, like
+# every in-org crate; DEV-ONLY, because nothing this binary SHIPS dials
+# anything — it is read from by a `-db` twin, never a dialler. No feature
+# flag: this crate declares no `[features]` table at all, so there is none to
+# pick.
+yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.15" }
+# For the SAME test: `chart/values.schema.json` is JSON, and parsing its
+# `database.acquireTimeoutSeconds.maximum` by hand is the fragile string-
+# scanning this format does not need. Already in this tree transitively
+# (`Cargo.lock` carries 1.0.151 today), so this adds no new crate to the
+# dependency graph — only a direct line to one already there.
+serde_json = "1"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -822,6 +822,13 @@ pub fn boot_cleartext_env(db_name: &str, password_file: &Path) -> Vec<(String, S
         ("DB_MAX_CONNECTIONS".to_string(), "4".to_string()),
         ("REPLICAS".to_string(), "1".to_string()),
         ("DB_ENGINE_MAX_CONNECTIONS".to_string(), "151".to_string()),
+        // The four pool-sizing knobs `yadgar-store` v0.4.0 stopped defaulting
+        // (ledger C-DB2, ADR-0837, ADR-0849); no fallback behind any of them,
+        // so this harness states shipped-chart-equivalent values explicitly.
+        ("DB_ENGINE_OPERATOR_RESERVE".to_string(), "5".to_string()),
+        ("DB_ACQUIRE_TIMEOUT_SECONDS".to_string(), "25".to_string()),
+        ("DB_IDLE_TIMEOUT_SECONDS".to_string(), "600".to_string()),
+        ("DB_MAX_LIFETIME_SECONDS".to_string(), "1800".to_string()),
         // The fixture engine speaks no TLS; `disabled` is `parse_ssl_mode`'s
         // own word for that, distinct from the listener's `LISTEN_TLS_ENABLED`
         // below.

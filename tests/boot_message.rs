@@ -69,6 +69,10 @@ fn an_unusable_migration_lock_wait_is_refused_naming_the_variable_and_the_chart_
         ("DB_MAX_CONNECTIONS", "4"),
         ("REPLICAS", "3"),
         ("DB_ENGINE_MAX_CONNECTIONS", "200"),
+        ("DB_ENGINE_OPERATOR_RESERVE", "5"),
+        ("DB_ACQUIRE_TIMEOUT_SECONDS", "25"),
+        ("DB_IDLE_TIMEOUT_SECONDS", "600"),
+        ("DB_MAX_LIFETIME_SECONDS", "1800"),
         ("DB_SSL_MODE", "verify-identity"),
         ("DB_MIGRATION_LOCK_TIMEOUT_SECONDS", "0"),
     ]);

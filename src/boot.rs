@@ -33,6 +33,7 @@
 //! have.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use sqlx::mysql::MySqlConnectOptions;
 use yadgar_store::credentials::Secret;
@@ -168,13 +169,29 @@ pub fn parse_listen_addr(key: &'static str, value: &str) -> Result<std::net::Soc
 const REPLICAS_CHART_KEY: &str = "replicaCount (or autoscaling.maxReplicas when \
      autoscaling.enabled is true)";
 
+/// The four pool-sizing knobs `yadgar-store` v0.4.0 stopped defaulting
+/// (ADR-0837, ADR-0849): how long `acquire` waits, how long an idle
+/// connection is kept, the age a connection is retired at, and how many of
+/// the engine's connections stay reserved for an operator. Each is a
+/// boot-only, single-reader, per-module knob (ADR-0837), so each is one
+/// environment variable rendered from this chart, read with no fallback —
+/// the same shape [`lock::migration_lock`] already holds for its own knob.
+const ACQUIRE_TIMEOUT_KEY: &str = "DB_ACQUIRE_TIMEOUT_SECONDS";
+const ACQUIRE_TIMEOUT_CHART_KEY: &str = "database.acquireTimeoutSeconds";
+const IDLE_TIMEOUT_KEY: &str = "DB_IDLE_TIMEOUT_SECONDS";
+const IDLE_TIMEOUT_CHART_KEY: &str = "database.idleTimeoutSeconds";
+const MAX_LIFETIME_KEY: &str = "DB_MAX_LIFETIME_SECONDS";
+const MAX_LIFETIME_CHART_KEY: &str = "database.maxLifetimeSeconds";
+const OPERATOR_RESERVE_KEY: &str = "DB_ENGINE_OPERATOR_RESERVE";
+const OPERATOR_RESERVE_CHART_KEY: &str = "database.engineOperatorReserve";
+
 /// Read the pool configuration, refusing rather than guessing.
 ///
 /// Takes the environment as a lookup rather than reading it directly, so a test
 /// can state a whole environment without mutating the process — `std::env` is
 /// global and `cargo test` runs threads in parallel.
 pub fn pool_config(env: impl Fn(&str) -> Option<String>) -> Result<PoolConfig, BootError> {
-    // EVERY ONE OF THE EIGHT IS REQUIRED, and every one is rendered by this
+    // EVERY ONE OF THE TWELVE IS REQUIRED, and every one is rendered by this
     // repository's chart — which is the half that makes the requirement safe
     // rather than a pod that will not boot. `map_err` at each site rather than a
     // signature change: this function's error type is `BootError` and its callers
@@ -208,6 +225,26 @@ pub fn pool_config(env: impl Fn(&str) -> Option<String>) -> Result<PoolConfig, B
             "DB_ENGINE_MAX_CONNECTIONS",
             "database.engineMaxConnections",
         )?,
+        operator_reserve: parse_knob(
+            env_required_chart(&env, OPERATOR_RESERVE_KEY, OPERATOR_RESERVE_CHART_KEY)?,
+            OPERATOR_RESERVE_KEY,
+            OPERATOR_RESERVE_CHART_KEY,
+        )?,
+        acquire_timeout: Duration::from_secs(parse_knob(
+            env_required_chart(&env, ACQUIRE_TIMEOUT_KEY, ACQUIRE_TIMEOUT_CHART_KEY)?,
+            ACQUIRE_TIMEOUT_KEY,
+            ACQUIRE_TIMEOUT_CHART_KEY,
+        )?),
+        idle_timeout: Duration::from_secs(parse_knob(
+            env_required_chart(&env, IDLE_TIMEOUT_KEY, IDLE_TIMEOUT_CHART_KEY)?,
+            IDLE_TIMEOUT_KEY,
+            IDLE_TIMEOUT_CHART_KEY,
+        )?),
+        max_lifetime: Duration::from_secs(parse_knob(
+            env_required_chart(&env, MAX_LIFETIME_KEY, MAX_LIFETIME_CHART_KEY)?,
+            MAX_LIFETIME_KEY,
+            MAX_LIFETIME_CHART_KEY,
+        )?),
         ssl_mode: parse_ssl_mode(&env_required_chart(&env, SSL_MODE_KEY, "database.sslMode")?)?,
         // STILL AN OPTIONAL READ, and deliberately NOT converted to
         // `env_required` with the rest (ADR-0569). The chart renders
