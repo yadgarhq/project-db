@@ -2025,7 +2025,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -2691,6 +2691,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "yadgar-dial"
+version = "0.1.0"
+source = "git+https://github.com/yadgarhq/dial.git?tag=v0.2.14#7ba58d836e020ab6c0b63eb4680d78727a191a88"
+dependencies = [
+ "metrics",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "yadgar-lifecycle"
 version = "0.1.0"
 source = "git+https://github.com/yadgarhq/lifecycle.git?tag=v0.2.17#45789e8d3f7374b2c3d4e5d0b7e7f17603de1a34"
@@ -2713,6 +2727,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rcgen",
+ "serde_json",
  "sha2 0.11.0",
  "sqlx",
  "thiserror",
@@ -2724,6 +2739,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "yadgar-dial",
  "yadgar-lifecycle",
  "yadgar-store",
  "yadgar-telemetry",
@@ -2732,7 +2748,7 @@ dependencies = [
 [[package]]
 name = "yadgar-store"
 version = "0.1.0"
-source = "git+https://github.com/yadgarhq/store.git?tag=v0.3.0#e0a06bf5955d6ef15068132e3055596022cae4d0"
+source = "git+https://github.com/yadgarhq/store.git?tag=v0.4.0#596a2233e6dfdc6e63fd3a757655595e34789c59"
 dependencies = [
  "sqlx",
  "thiserror",

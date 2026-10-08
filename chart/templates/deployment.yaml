@@ -252,12 +252,24 @@ spec:
             {{- end }}
             # D4's arithmetic, both halves of it. The binary refuses to boot
             # when maxConnections x REPLICAS exceeds the engine's ceiling less
-            # the five it reserves for an operator, so an engine with a smaller
-            # ceiling than stock MariaDB's 151 needs all three to be settable.
+            # engineOperatorReserve, so an engine with a smaller ceiling than
+            # stock MariaDB's 151 needs all four to be settable.
             - name: DB_MAX_CONNECTIONS
               value: {{ .Values.database.maxConnections | quote }}
             - name: DB_ENGINE_MAX_CONNECTIONS
               value: {{ .Values.database.engineMaxConnections | quote }}
+            # The four pool-sizing knobs `yadgar-store` v0.4.0 stopped compiling
+            # in (ledger C-DB2, ADR-0837, ADR-0849). No default behind any of
+            # them in the binary; values.yaml carries the shipped number and
+            # the schema its bound.
+            - name: DB_ENGINE_OPERATOR_RESERVE
+              value: {{ .Values.database.engineOperatorReserve | quote }}
+            - name: DB_ACQUIRE_TIMEOUT_SECONDS
+              value: {{ .Values.database.acquireTimeoutSeconds | quote }}
+            - name: DB_IDLE_TIMEOUT_SECONDS
+              value: {{ .Values.database.idleTimeoutSeconds | quote }}
+            - name: DB_MAX_LIFETIME_SECONDS
+              value: {{ .Values.database.maxLifetimeSeconds | quote }}
             # The migration lock's wait (ledger 814). No default behind it in the
             # binary; values.yaml carries the bound and its arithmetic.
             - name: DB_MIGRATION_LOCK_TIMEOUT_SECONDS

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use super::*;
 use yadgar_store::pool::MySqlSslMode;
@@ -25,8 +26,13 @@ fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String
 /// from the lookup rather than from a fallback somebody left behind. The
 /// former defaults (`127.0.0.1`, `3306`, `project`, `8`, `2`, `151`,
 /// `required`) are deliberately absent from this list: a fixture repeating
-/// them could not tell a read from a leftover default.
-const RENDERED: [(&str, &str); 8] = [
+/// them could not tell a read from a leftover default. The four pool-sizing
+/// sentinels (`17`, `433`, `1291`, `9`) are likewise none of the shipped
+/// chart values (`25`, `600`, `1800`, `5`) `yadgar-store` v0.4.0 stopped
+/// defaulting (ADR-0837, ADR-0849), and `9` is deliberately not `3`
+/// (`REPLICAS`'s own sentinel below) so a mutation swapping the two reads
+/// would not go unnoticed.
+const RENDERED: [(&str, &str); 12] = [
     ("DB_HOST", "engine.example.invalid"),
     ("DB_PORT", "13306"),
     ("DB_NAME", "okapi_3f19_fixture"),
@@ -35,6 +41,10 @@ const RENDERED: [(&str, &str); 8] = [
     ("REPLICAS", "3"),
     ("DB_ENGINE_MAX_CONNECTIONS", "137"),
     ("DB_SSL_MODE", "verify-identity"),
+    ("DB_ACQUIRE_TIMEOUT_SECONDS", "17"),
+    ("DB_IDLE_TIMEOUT_SECONDS", "433"),
+    ("DB_MAX_LIFETIME_SECONDS", "1291"),
+    ("DB_ENGINE_OPERATOR_RESERVE", "9"),
 ];
 
 /// The rendered environment, with `overrides` winning over it.
@@ -76,6 +86,12 @@ fn config_with(mode: MySqlSslMode) -> PoolConfig {
         max_connections: 4,
         replicas: 2,
         engine_max_connections: 151,
+        // Not this test's concern (it is about `ssl_mode` alone), so these
+        // are plain non-zero values rather than the `RENDERED` sentinels.
+        operator_reserve: 5,
+        acquire_timeout: Duration::from_secs(25),
+        idle_timeout: Duration::from_secs(600),
+        max_lifetime: Duration::from_secs(1800),
         ssl_mode: mode,
         ssl_ca: None,
     }
@@ -241,6 +257,23 @@ fn the_engines_name_and_user_travel_from_the_environment() {
     let config = pool_config(env_with(&[])).expect("config");
     assert_eq!(config.database, "okapi_3f19_fixture");
     assert_eq!(config.username, "okapi_3f19_user");
+}
+
+/// THE FOUR POOL-SIZING KNOBS TRAVEL FROM THE ENVIRONMENT, not from anything
+/// compiled in. `yadgar-store` v0.4.0 deleted the last of these defaults
+/// (ADR-0837, ADR-0849): `acquire_timeout`, `idle_timeout` and `max_lifetime`
+/// used to be sqlx's own 30s/600s/1800s, and `operator_reserve` used to be
+/// the `5` this module compiled in. This chart's `database.*` keys are now
+/// the only source for all four, and the sentinels prove the read: nothing
+/// in this module, `store`, or sqlx would arrive at seventeen seconds on its
+/// own.
+#[test]
+fn the_pool_sizing_knobs_travel_from_the_environment() {
+    let config = pool_config(env_with(&[])).expect("config");
+    assert_eq!(config.acquire_timeout, Duration::from_secs(17));
+    assert_eq!(config.idle_timeout, Duration::from_secs(433));
+    assert_eq!(config.max_lifetime, Duration::from_secs(1291));
+    assert_eq!(config.operator_reserve, 9);
 }
 
 /// EVERY KNOB IS PROVED REQUIRED, ONE AT A TIME.
@@ -480,6 +513,13 @@ fn a_handler_that_cannot_be_installed_names_both_signals_and_the_response() {
 /// loop is owed the line in `values.yaml` to edit, the same way
 /// `boot::lock::migration_lock`'s refusal already names
 /// `database.migrationLockTimeoutSeconds`.
+///
+/// **BOTH ABSENT AND EMPTY, not absent alone.** `env_required_chart` appends
+/// the chart key to WHICHEVER sentence `env_required` chose, so a mutation
+/// that appended it only on the absent branch — dropping it on the
+/// set-but-empty one, which Helm's own nulled-value shape actually produces
+/// — compiled, and until this loop also ran against `env_with(&[(key, "")])`
+/// nothing here would have turned red.
 #[test]
 fn every_missing_knob_refusal_names_the_chart_key() {
     let expected: &[(&str, &str)] = &[
@@ -491,12 +531,22 @@ fn every_missing_knob_refusal_names_the_chart_key() {
         ("REPLICAS", "replicaCount"),
         ("DB_ENGINE_MAX_CONNECTIONS", "database.engineMaxConnections"),
         (SSL_MODE_KEY, "database.sslMode"),
+        (ACQUIRE_TIMEOUT_KEY, ACQUIRE_TIMEOUT_CHART_KEY),
+        (IDLE_TIMEOUT_KEY, IDLE_TIMEOUT_CHART_KEY),
+        (MAX_LIFETIME_KEY, MAX_LIFETIME_CHART_KEY),
+        (OPERATOR_RESERVE_KEY, OPERATOR_RESERVE_CHART_KEY),
     ];
     for (key, chart_key) in expected {
-        let message = pool_config(env_without(key)).unwrap_err().to_string();
+        let absent = pool_config(env_without(key)).unwrap_err().to_string();
         assert!(
-            message.contains(chart_key),
-            "{key} refused without naming {chart_key}: {message}"
+            absent.contains(chart_key),
+            "{key} refused absent without naming {chart_key}: {absent}"
+        );
+
+        let empty = pool_config(env_with(&[(key, "")])).unwrap_err().to_string();
+        assert!(
+            empty.contains(chart_key),
+            "{key} refused empty without naming {chart_key}: {empty}"
         );
     }
 }
@@ -513,6 +563,10 @@ fn an_unparseable_numeric_knob_names_itself_the_value_and_the_chart_key() {
         ("DB_MAX_CONNECTIONS", "database.maxConnections"),
         ("REPLICAS", "replicaCount"),
         ("DB_ENGINE_MAX_CONNECTIONS", "database.engineMaxConnections"),
+        (ACQUIRE_TIMEOUT_KEY, ACQUIRE_TIMEOUT_CHART_KEY),
+        (IDLE_TIMEOUT_KEY, IDLE_TIMEOUT_CHART_KEY),
+        (MAX_LIFETIME_KEY, MAX_LIFETIME_CHART_KEY),
+        (OPERATOR_RESERVE_KEY, OPERATOR_RESERVE_CHART_KEY),
     ];
     for (key, chart_key) in expected {
         let err = pool_config(env_with(&[(key, "not-a-number")]))

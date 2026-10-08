@@ -79,9 +79,24 @@ EXTRAS = frozenset(
     }
 )
 
-# Leaves that carry real type information (shipped before ledger 990, kept
-# unchanged by this PR) rather than the untyped `{}` every other leaf gets.
-RETAINED_TYPED_LEAVES = frozenset({"database.migrationLockTimeoutSeconds"})
+# Leaves that carry real type information rather than the untyped `{}` every
+# other leaf gets. `database.migrationLockTimeoutSeconds` shipped before
+# ledger 990 and is kept unchanged by this PR. The four pool-sizing knobs
+# (ledger C-DB2, ADR-0837, ADR-0849) join it for the same reason: each is
+# `required` with a chart default `values.yaml` ships (so none belongs in
+# `REQUIRED_NO_DEFAULT` below), and `required` alone passes a null value
+# through (K-1), so the leaf needs its type too. `acquireTimeoutSeconds`
+# alone also keeps a `maximum`, pinned against the dial's own request
+# deadline by `tests/chart_request_deadline.rs`.
+RETAINED_TYPED_LEAVES = frozenset(
+    {
+        "database.migrationLockTimeoutSeconds",
+        "database.acquireTimeoutSeconds",
+        "database.idleTimeoutSeconds",
+        "database.maxLifetimeSeconds",
+        "database.engineOperatorReserve",
+    }
+)
 
 # `tls.enabled` (ledger 1278, ADR-0845, C-DB1): a leaf `values.yaml`
 # DELIBERATELY ships no value for, because the knob's own absence is the
