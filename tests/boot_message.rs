@@ -89,3 +89,76 @@ fn an_unusable_migration_lock_wait_is_refused_naming_the_variable_and_the_chart_
         "the operator got the Debug variant, not the sentence: {stderr}"
     );
 }
+
+/// A FULL environment MINUS one of the four pool-sizing knobs `yadgar-store`
+/// v0.4.0 stopped defaulting (ledger C-DB2, ADR-0837, ADR-0849): the same
+/// shape `an_unusable_migration_lock_wait_is_refused_naming_the_variable_and_the_chart_key`
+/// already proves for the migration lock, parity for one of these. Reading
+/// the operator's OUTPUT, not the enum, is what this binary-spawn rig
+/// proves and a unit test on `BootError` cannot.
+#[test]
+fn an_unset_engine_operator_reserve_is_refused_naming_the_variable_and_the_chart_key() {
+    let stderr = refusal(&[
+        ("DB_HOST", "engine.example.invalid"),
+        ("DB_PORT", "13306"),
+        ("DB_NAME", "project_fixture"),
+        ("DB_USER", "project_fixture_user"),
+        ("DB_MAX_CONNECTIONS", "4"),
+        ("REPLICAS", "3"),
+        ("DB_ENGINE_MAX_CONNECTIONS", "200"),
+        // DB_ENGINE_OPERATOR_RESERVE deliberately absent.
+        ("DB_ACQUIRE_TIMEOUT_SECONDS", "25"),
+        ("DB_IDLE_TIMEOUT_SECONDS", "600"),
+        ("DB_MAX_LIFETIME_SECONDS", "1800"),
+        ("DB_SSL_MODE", "verify-identity"),
+        ("DB_MIGRATION_LOCK_TIMEOUT_SECONDS", "60"),
+    ]);
+    assert!(
+        stderr.contains("DB_ENGINE_OPERATOR_RESERVE is NOT SET"),
+        "the refusal must name the variable: {stderr}"
+    );
+    assert!(
+        stderr.contains("database.engineOperatorReserve"),
+        "the refusal must name the chart key: {stderr}"
+    );
+    assert!(
+        !stderr.contains("MissingKnob("),
+        "the operator got the Debug variant, not the sentence: {stderr}"
+    );
+}
+
+/// A FULL environment with one of the four pool-sizing knobs SET but not a
+/// whole number — parity with
+/// `an_unset_engine_operator_reserve_is_refused_naming_the_variable_and_the_chart_key`
+/// for the OTHER failure shape `BootError::Unparsable` reaches: present,
+/// read, and unusable, rather than absent.
+#[test]
+fn a_malformed_acquire_timeout_is_refused_naming_itself_the_value_and_the_chart_key() {
+    let stderr = refusal(&[
+        ("DB_HOST", "engine.example.invalid"),
+        ("DB_PORT", "13306"),
+        ("DB_NAME", "project_fixture"),
+        ("DB_USER", "project_fixture_user"),
+        ("DB_MAX_CONNECTIONS", "4"),
+        ("REPLICAS", "3"),
+        ("DB_ENGINE_MAX_CONNECTIONS", "200"),
+        ("DB_ENGINE_OPERATOR_RESERVE", "5"),
+        ("DB_ACQUIRE_TIMEOUT_SECONDS", "not-a-number"),
+        ("DB_IDLE_TIMEOUT_SECONDS", "600"),
+        ("DB_MAX_LIFETIME_SECONDS", "1800"),
+        ("DB_SSL_MODE", "verify-identity"),
+        ("DB_MIGRATION_LOCK_TIMEOUT_SECONDS", "60"),
+    ]);
+    assert!(
+        stderr.contains("DB_ACQUIRE_TIMEOUT_SECONDS is \"not-a-number\""),
+        "the refusal must name the variable and the value: {stderr}"
+    );
+    assert!(
+        stderr.contains("database.acquireTimeoutSeconds"),
+        "the refusal must name the chart key: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Unparsable {"),
+        "the operator got the Debug variant, not the sentence: {stderr}"
+    );
+}

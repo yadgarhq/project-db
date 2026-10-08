@@ -93,8 +93,11 @@ rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"]
 # every in-org crate; DEV-ONLY, because nothing this binary SHIPS dials
 # anything — it is read from by a `-db` twin, never a dialler. No feature
 # flag: this crate declares no `[features]` table at all, so there is none to
-# pick.
-yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.15" }
+# pick. v0.2.14, the estate's own pin on this crate today (gateway, iam,
+# task, project all carry it) — `default_request_timeout`'s 30s is unchanged
+# since, so there is no reason for this, the one dev-only reader, to sit
+# ahead of every real caller.
+yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.14" }
 # For the SAME test: `chart/values.schema.json` is JSON, and parsing its
 # `database.acquireTimeoutSeconds.maximum` by hand is the fragile string-
 # scanning this format does not need. Already in this tree transitively

@@ -106,3 +106,20 @@ def test_above_the_bound_is_refused_at_render() -> None:
 def test_a_nulled_database_block_is_refused_at_render() -> None:
     result = render("--set", "database=null")
     assert result.returncode != 0, "a nulled database block rendered"
+
+
+def test_a_string_shaped_value_is_refused_at_render() -> None:
+    """`type: integer` is LOAD-BEARING, not decoration `minimum`/`maximum`
+    would catch anyway. `--set` alone cannot produce this case — it infers a
+    bare digit string as JSON's own integer — so this uses `--set-string`,
+    which is what a values override that quotes a number (`"25"`) also
+    produces. Dropping `type: integer` from the schema would still catch an
+    out-of-bound number but would pass this value straight through to the
+    binary as a string the chart's own `| quote` then doubles, which is a
+    different render than every other case in this file exercises.
+    """
+    for knob, _, shipped, _ in KNOBS:
+        leaf = knob.rsplit(".", 1)[-1]
+        result = render("--set-string", f"{knob}={shipped}")
+        assert result.returncode != 0, f"{knob}: a string-shaped value rendered"
+        assert leaf in result.stderr, f"{knob}: {result.stderr}"

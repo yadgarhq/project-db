@@ -252,8 +252,8 @@ spec:
             {{- end }}
             # D4's arithmetic, both halves of it. The binary refuses to boot
             # when maxConnections x REPLICAS exceeds the engine's ceiling less
-            # the five it reserves for an operator, so an engine with a smaller
-            # ceiling than stock MariaDB's 151 needs all three to be settable.
+            # engineOperatorReserve, so an engine with a smaller ceiling than
+            # stock MariaDB's 151 needs all four to be settable.
             - name: DB_MAX_CONNECTIONS
               value: {{ .Values.database.maxConnections | quote }}
             - name: DB_ENGINE_MAX_CONNECTIONS

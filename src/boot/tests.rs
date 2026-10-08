@@ -513,6 +513,13 @@ fn a_handler_that_cannot_be_installed_names_both_signals_and_the_response() {
 /// loop is owed the line in `values.yaml` to edit, the same way
 /// `boot::lock::migration_lock`'s refusal already names
 /// `database.migrationLockTimeoutSeconds`.
+///
+/// **BOTH ABSENT AND EMPTY, not absent alone.** `env_required_chart` appends
+/// the chart key to WHICHEVER sentence `env_required` chose, so a mutation
+/// that appended it only on the absent branch — dropping it on the
+/// set-but-empty one, which Helm's own nulled-value shape actually produces
+/// — compiled, and until this loop also ran against `env_with(&[(key, "")])`
+/// nothing here would have turned red.
 #[test]
 fn every_missing_knob_refusal_names_the_chart_key() {
     let expected: &[(&str, &str)] = &[
@@ -530,10 +537,16 @@ fn every_missing_knob_refusal_names_the_chart_key() {
         (OPERATOR_RESERVE_KEY, OPERATOR_RESERVE_CHART_KEY),
     ];
     for (key, chart_key) in expected {
-        let message = pool_config(env_without(key)).unwrap_err().to_string();
+        let absent = pool_config(env_without(key)).unwrap_err().to_string();
         assert!(
-            message.contains(chart_key),
-            "{key} refused without naming {chart_key}: {message}"
+            absent.contains(chart_key),
+            "{key} refused absent without naming {chart_key}: {absent}"
+        );
+
+        let empty = pool_config(env_with(&[(key, "")])).unwrap_err().to_string();
+        assert!(
+            empty.contains(chart_key),
+            "{key} refused empty without naming {chart_key}: {empty}"
         );
     }
 }

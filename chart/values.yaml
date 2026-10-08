@@ -108,10 +108,11 @@ database:
   # THE OTHER HALF OF D4's ARITHMETIC, and the reason this one is not optional.
   #
   # `store`'s `check_engine_headroom` refuses boot when
-  # maxConnections x replicas exceeds engineMaxConnections minus five, the five
-  # being what the engine keeps back so an operator can still log in. 151 is
-  # stock MariaDB's number; RDS derives max_connections from instance size, and
-  # a small instance is well under it. On an engine with a smaller ceiling the
+  # maxConnections x replicas exceeds engineMaxConnections minus
+  # engineOperatorReserve below, the reserve being what this pool's
+  # arithmetic leaves free so an operator can still log in. 151 is stock
+  # MariaDB's number; RDS derives max_connections from instance size, and a
+  # small instance is well under it. On an engine with a smaller ceiling the
   # pod could not start and the operator had no value to change.
   maxConnections: 8
   engineMaxConnections: 151
@@ -136,10 +137,9 @@ database:
   # equal to the caller's whole request deadline
   # (`yadgar_dial::default_request_timeout`), which meant this pool could
   # never surface as the FIRST error. 25s leaves 5s of margin below that
-  # deadline, which `tests/chart_request_deadline.rs` pins. `gateway`'s own
-  # downstream deadlines — `AUTH_DEADLINE` (10s) and `RESOLVE_DEADLINE` (5s)
-  # — stay well inside this pool's budget too; they bound a different hop
-  # and are unaffected by it.
+  # deadline, which `tests/chart_request_deadline.rs` pins. `gateway`'s
+  # `AUTH_DEADLINE` (10s) and `RESOLVE_DEADLINE` (5s) bound only its calls
+  # to `iam`; they are not on this module's path.
   #
   # THE BOUND IS 1..29, and chart/values.schema.json is its one source:
   # minimum 1, same reasoning as the migration lock's below (an acquire of
