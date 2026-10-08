@@ -479,7 +479,7 @@ async fn a_tls_listener_refuses_a_cleartext_client() {
     let outcome = in_cleartext(port).await;
     assert!(
         outcome.is_err(),
-        "a listener told to serve TLS must not answer a cleartext client: {outcome:?}"
+        "a listener told to serve TLS must not answer a cleartext client"
     );
 }
 
@@ -499,7 +499,7 @@ async fn a_client_trusting_another_authority_is_refused() {
     let outcome = over_tls(port, &stranger.ca_pem).await;
     assert!(
         outcome.is_err(),
-        "a certificate from an authority the client does not trust must be refused: {outcome:?}"
+        "a certificate from an authority the client does not trust must be refused"
     );
 }
 
@@ -570,7 +570,7 @@ async fn an_undecodable_certificate_refuses_the_boot() {
         let outcome = boot::server(Some(&tls));
         assert!(
             matches!(outcome, Err(BootError::ListenerTls { .. })),
-            "a certificate file containing {contents:?} must refuse the boot"
+            "an undecodable certificate file must refuse the boot"
         );
     }
 }
@@ -587,7 +587,7 @@ async fn an_undecodable_private_key_refuses_the_boot() {
         let outcome = boot::server(Some(&tls));
         assert!(
             matches!(outcome, Err(BootError::ListenerTls { .. })),
-            "a key file containing {contents:?} must refuse the boot"
+            "an undecodable private key file must refuse the boot"
         );
     }
 }
@@ -733,6 +733,38 @@ async fn required_refuses_a_caller_whose_certificate_another_authority_issued() 
     assert!(
         outcome.is_err(),
         "a caller certificate from an authority the listener does not trust must be refused"
+    );
+}
+
+/// `optional` ADMITS A CALLER PRESENTING NOTHING, and still VERIFIES a
+/// caller that presents a certificate: a leaf from another authority is
+/// refused. A staging step, not a control (ADR-0852).
+///
+/// MUTATION: set the mode to `off` and the foreign leaf is answered; set it
+/// to `required` and the caller presenting nothing is refused.
+#[tokio::test]
+async fn optional_admits_no_certificate_and_refuses_a_foreign_one() {
+    let p = pki(SERVED_NAME);
+    let cert = TempPem::with(&p.cert_pem);
+    let key = TempPem::with(&p.key_pem);
+    let ca = TempPem::with(&p.ca_pem);
+    let tls = listener(cert.path(), key.path(), "optional", Some(ca.path()));
+    let port = serve_on_localhost(Some(&tls)).await;
+
+    assert_eq!(
+        presenting(port, &p.ca_pem, None).await,
+        Ok(200),
+        "clientAuth `optional` must answer a caller presenting no certificate"
+    );
+    let stranger = pki(SERVED_NAME);
+    let foreign = (
+        stranger.client_cert_pem.as_str(),
+        stranger.client_key_pem.as_str(),
+    );
+    let outcome = presenting(port, &p.ca_pem, Some(foreign)).await;
+    assert!(
+        outcome.is_err(),
+        "clientAuth `optional` must still refuse a certificate it cannot verify"
     );
 }
 

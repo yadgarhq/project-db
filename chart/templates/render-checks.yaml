@@ -266,9 +266,9 @@ file survives coalescing for a key `values.yaml` does not declare, so `hasKey`
 alone is true for it, and null means unset — then `kindIs "string"` BEFORE any
 `eq` (YAML 1.1 reads a bare off as false, and comparing a bool to a string is
 a Go type error naming no key), then the three values.
-`chart/values.schema.json` also lists `clientAuth` in `tls.required` with an
-`enum`, so an ordinary render meets the schema first; these sentences answer
-where the schema is not read.
+`chart/values.schema.json` lists `clientAuth` in `tls.required` (untyped,
+R1), so an absent key meets the schema first; a null, non-string or unknown
+value passes the schema and is refused here, by these sentences.
 
 B-U5E's "not enforced yet" refusal of `optional` and `required` is LIFTED: the
 binary enforces both now. What replaces it are the two refusals the binary

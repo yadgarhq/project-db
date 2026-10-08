@@ -15,7 +15,7 @@
 //! for client auth rather than what a missing variable means.
 
 use tonic::transport::Server;
-use yadgar_lifecycle::serve_tls::{self as lifted, ServeTlsError};
+use yadgar_lifecycle::serve_tls::ServeTlsError;
 pub use yadgar_lifecycle::serve_tls::{ClientAuth, ServerTls};
 // THE ONE ERROR-CHAIN FLATTENER FOR THE ESTATE (ADR-0591).
 use yadgar_telemetry::diagnose::chain;
@@ -53,7 +53,7 @@ pub fn listener_tls(
 /// crate's builder is eager: it reads every file, matches the certificate to
 /// its key and builds the client verifier here.
 pub fn server(tls: Option<&ServerTls>) -> Result<Server, BootError> {
-    lifted::server(tls).map_err(refused)
+    yadgar_lifecycle::serve_tls::server(tls).map_err(refused)
 }
 
 /// The crate's refusal as this binary's, flattened through [`chain`] for
