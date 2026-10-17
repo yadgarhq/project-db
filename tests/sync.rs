@@ -323,6 +323,13 @@ async fn a_sync_without_a_scope_or_a_principal_is_refused() {
             .await
             .unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
+    // NO GATEWAY ON THIS PATH (ADR-0942): the refusal must not tell the
+    // caller a gateway attests the Scope it was supposed to build.
+    assert!(
+        err.message().contains("seeder") && !err.message().contains("gateway"),
+        "{}",
+        err.message()
+    );
 
     let mut req = w.sync_request(&[root()], &[], false);
     req.scope.as_mut().unwrap().user_id = String::new();

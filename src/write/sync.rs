@@ -47,7 +47,7 @@ use crate::path;
 use crate::pb::yadgar::common::v1::Visibility;
 use crate::pb::yadgar::project::v1::*;
 use crate::service::{ProjectDb, SYNC_CALLER};
-use crate::sql::{holes, internal, scope_of};
+use crate::sql::{holes, internal};
 
 /// The width of `display_name` AND `source_repo`, in CHARACTERS — both are
 /// `VARCHAR(255)` on utf8mb4. `register.rs`'s `MAX_DISPLAY_NAME_CHARS` makes
@@ -71,7 +71,15 @@ impl ProjectDb {
         req: SyncProjectsRequest,
     ) -> Result<SyncProjectsResponse, Status> {
         admit(caller)?;
-        let scope = scope_of(&req.scope)?;
+        // NOT `sql::scope_of`, whose refusal says a Scope "is attested by the
+        // gateway". No gateway sits on this path: the seeder builds this Scope
+        // itself and `project` relays it (ADR-0942), so that advice is false here.
+        let scope = req.scope.as_ref().ok_or_else(|| {
+            Status::invalid_argument(
+                "scope is required: the seeder builds it with its system principal as user_id \
+                 and a request_id it mints, and project relays it unchanged (ADR-0942)",
+            )
+        })?;
         let actor = principal(&scope.user_id)?;
         let declared = validate(&req)?;
 
