@@ -219,20 +219,26 @@ async fn a_legitimate_row_of_each_class_is_accepted() {
     );
 }
 
-/// `RegisterProject` still serves. The CLASS comes from the path; the org class's
-/// repository comes from the REQUEST.
+/// BOTH WRITERS fill the class columns: `SyncProjects` the org class, with the
+/// repository the DECLARATION names; `RegisterProject` the private class, with
+/// the caller as owner (ADR-0936 made them disjoint by class).
 ///
 /// The contract carries no class FLAG — a project is private by construction of
-/// its id (ADR-0605) — so the service reads the class off the path, and this is
-/// where that derivation is pinned. What the service does NOT derive any more is
-/// `source_repo`: `RegisterProjectRequest.source_repo` carries it, and the value
-/// stored is the caller's. `visibility` is D12's default per class: `PRIVATE` for
-/// a private project, `ORG` for an organisational one.
+/// its id (ADR-0605). What neither writer derives is `source_repo`: it is the
+/// declaration's, and the value stored is the one sent. `visibility` is D12's
+/// default per class: `PRIVATE` for a private project, `ORG` for an
+/// organisational one.
 #[tokio::test]
-async fn registration_fills_the_class_columns_from_the_path_and_the_request() {
+async fn both_writers_fill_the_class_columns_from_the_path_and_the_request() {
     let w = World::fresh("project_db_class_register").await;
 
-    w.try_register(ORG, "").await.expect("an org registration");
+    w.sync(
+        &[declared(ROOT, "", REPO)],
+        &[declared(ORG, "", FIXTURE_REPO)],
+        false,
+    )
+    .await
+    .expect("an org declaration");
     assert_eq!(
         w.stored_class(ORG).await,
         (Some(FIXTURE_REPO.to_string()), None),
@@ -300,10 +306,11 @@ async fn registration_fills_the_class_columns_from_the_path_and_the_request() {
 #[tokio::test]
 async fn the_namespace_anchor_names_the_repository_that_governs_it_rather_than_itself() {
     let w = World::fresh("project_db_class_root_row").await;
-    // `ROOT` is a single segment and not the reserved one, so it registers.
-    w.register_with_repo(ROOT, "the namespace anchor", REPO)
+    // `ROOT` is a single segment and not the reserved one, so it is a root the
+    // org writer accepts.
+    w.sync(&[declared(ROOT, "the namespace anchor", REPO)], &[], false)
         .await
-        .expect("a single-segment org path is registrable");
+        .expect("a single-segment org path is declarable as a root");
     assert_eq!(
         w.stored_class(ROOT).await,
         (Some(REPO.to_string()), None),
@@ -320,43 +327,29 @@ async fn the_namespace_anchor_names_the_repository_that_governs_it_rather_than_i
     );
 }
 
-/// **AN ORG REGISTRATION THAT NAMES NO REPOSITORY IS REFUSED, NOT DEFAULTED.**
+/// **AN ORG REGISTRATION IS REFUSED, WHETHER OR NOT IT NAMES A REPOSITORY, AND
+/// NO ROW LANDS.**
 ///
-/// This is the other half of the test above and the reason that one can be
-/// trusted. Falling back to the path is the defect the field exists to close, so a
-/// registration sending nothing must fail rather than quietly land the old wrong
-/// value — ADR-0569's rule that a missing input is refused and never silently
-/// defaulted, applied to the one column the gateway composes prose from. A wrong
-/// remediation is worse than the degraded one the gateway emits without it.
+/// `RegisterProject` used to register an org path when it named a
+/// `source_repo` and refuse it `INVALID_ARGUMENT` when it did not. ADR-0936
+/// made `SyncProjects` the one writer of the org class, so `RegisterProject`
+/// now refuses EVERY org-class path `FAILED_PRECONDITION` — and the
+/// requirement that an org row names its repository lives in the sync, where
+/// `tests/sync.rs` pins it.
 ///
-/// **DRIVEN THROUGH `register_with_repo` WITH AN EXPLICIT `""`, NEVER THROUGH
-/// `try_register`.** The fixture's `try_register` fills the field from
-/// `default_source_repo` so that three dozen tests which are not about it need not
-/// state one — which makes it a door AROUND this requirement. A test of the
-/// requirement driven through that door would stay green with the guard deleted.
-///
-/// **EMPTY IS WHAT AN OMITTED FIELD LOOKS LIKE.** proto3 gives a bare `string` no
-/// presence bit, so there is no request this fixture could send that is more
-/// absent than this one, and no second case to write.
-///
-/// **AND NO ROW LANDS.** A refusal that inserted first and reported an error
-/// afterwards would leave the store holding exactly the row the guard exists to
-/// keep out, and the `expect_err` alone cannot see it.
+/// **DRIVEN THROUGH `register_with_repo`**, with an explicit repository and
+/// with `""`, so neither the fixture's default nor its absence decides it.
 #[tokio::test]
-async fn an_org_registration_naming_no_repository_is_refused_and_lands_nothing() {
+async fn an_org_registration_is_refused_and_lands_nothing() {
     let w = World::fresh("project_db_class_org_no_repo").await;
 
-    let err = w
-        .register_with_repo(ORG, "", "")
-        .await
-        .expect_err("an org project is governed by a repository, and none was named");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
-    assert!(
-        err.message().contains("source_repo"),
-        "the refusal names the missing field; it said {:?}",
-        err.message()
-    );
-
+    for repo in ["", REPO] {
+        let err = w
+            .register_with_repo(ORG, "", repo)
+            .await
+            .expect_err("RegisterProject registers the private class only");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition, "repo {repo:?}");
+    }
     assert_eq!(
         w.row_count(ORG).await,
         0,

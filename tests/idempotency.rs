@@ -7,6 +7,13 @@ use support::*;
 /// A key nothing in the implementation could produce.
 const KEY: &str = "okapi-3f19-idem";
 
+/// PRIVATE-CLASS paths, shadowing the fixture's org-class `A` and `B`.
+/// `RegisterProject` — the one verb that claims a D9 key — registers the
+/// private class only since `SyncProjects` became the org writer (ADR-0936),
+/// so a D9 case has to be about a path it will register.
+const A: &str = "local/jaguar-4f80/alpha";
+const B: &str = "local/jaguar-4f80/bravo";
+
 async fn world(name: &str) -> World {
     World::fresh(name).await
 }

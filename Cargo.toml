@@ -54,7 +54,11 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # control cannot drift six ways. `rotate` stays on through the default
 # features, and the crate implements `Material` for `ServerTls` there, so the
 # client CA joins the ADR-0523 watch set exactly when it is read.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.20", features = ["serve-tls"] }
+#
+# `serve_tls::caller_common_name` (lifecycle#31) is what `SyncProjects` reads
+# its caller's identity with (ADR-0936), so `project` and this store parse a
+# client leaf one way.
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.23", features = ["serve-tls"] }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",

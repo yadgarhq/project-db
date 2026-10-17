@@ -39,27 +39,66 @@ Valkey bucket, never a per-request write. It advances the column
 D8's compare-and-set counter and the second means "when did this REGISTRATION
 last change".
 
+## `SyncProjects`: the one writer of organisation projects
+
+Organisation-level projects are declared in the organisation's GitOps repository,
+not created on demand (D43, D52, ADR-0705). The D35 seeder sends the whole
+declaration to `project`, and `project` relays it here as `SyncProjects`
+(ADR-0934, ADR-0936). One call is one transaction:
+
+1. **The caller.** Only `project`'s client leaf (`project-caller`) is admitted.
+   Every other caller gets `PERMISSION_DENIED` before a connection is taken.
+   mTLS proves "one of ours" and the common name proves "which one". The name is
+   read with `yadgar_lifecycle::serve_tls::caller_common_name`.
+2. **Validation.** The request needs at least one root, and every root is a single
+   segment. Every project sits under a declared root. No path is in `local/`, and
+   no path appears twice (case-folded). `source_repo` is required and at most 255
+   characters, and so is the width of `display_name`. A failure is
+   `INVALID_ARGUMENT`, names the path, and writes nothing.
+3. **The sentinel lock.** `SELECT … FOR UPDATE` on the single row in
+   `project_sync_lock` (migration 5). Two syncs serialise on it, and so do two
+   first syncs into an empty store. Locking the org rows would not work: on an
+   empty table, a `FOR UPDATE` excludes nothing.
+4. **The aliases.** A declared path that is a former path of another project is
+   `ALREADY_EXISTS`.
+5. **The mass-archive guard** (ADR-0939). A sync that would archive strictly more
+   than half of the ACTIVE org rows (roots included) is `FAILED_PRECONDITION`
+   unless `allow_mass_archive` is set. Exactly half is admitted. An empty store
+   never trips it.
+6. **The writes.** Each declared row is inserted, updated, reactivated or left
+   unchanged. Each active org row the declaration omits is archived. Archive is a
+   status flip, never a delete. Private rows are never touched. The response
+   carries the five counts.
+
+A declared path that differs from the stored one **by ASCII case only** is the
+same row. The stored spelling is kept: the path is the partition key on every
+record, and rewriting it is a rename (D53).
+
+`RegisterProject` is the **private-class** path (`local/...`, ledger 641). It
+refuses an org-class path with `FAILED_PRECONDITION`, so the two writers are
+disjoint by `ck_project_class`. Nothing in the estate calls it yet.
+
 ## `RenameProject` and `ArchiveProject` answer `UNIMPLEMENTED`
 
-**Held back on a data argument, not an effort one.** An alias keeps a stored
-`Meta.project_id` valid; it does not keep it CURRENT. Every memory, wiki page,
-ADR and task already stamped with a project path goes on carrying it, and the job
-that retags them does not exist — so a rename shipped today silently orphans
-those records rather than moving them: readable, valid, and absent from every
-view of the project they belong to. Archiving has the same shape one step
-earlier, since an instance must be able to retag before anything is archived.
-Both verbs return together with that retag job.
+**Rename is held back on a data argument, not an effort one.** An alias keeps a
+stored `Meta.project_id` valid. It does not keep it CURRENT. Every memory, wiki
+page, ADR and task already stamped with a project path goes on carrying it, and
+the job that retags them does not exist. So a rename shipped today silently
+orphans those records rather than moving them: they stay readable and valid, and
+they are absent from every view of the project they belong to. Rename returns
+with that retag job.
+
+**A status-only archive does not have that problem.** Neither resolver consults
+status, so a record stamped with an archived path still resolves to it.
+`SyncProjects` archives that way. There is no per-row `ArchiveProject`, because
+ADR-0705 builds no per-row verb for organisation projects.
 
 **Refused, never omitted.** A method a service silently lacks answers
 `UNIMPLEMENTED` from tonic's own fallback with no reason in it, and a caller
 cannot tell that from a version skew or a bad route. These refuse with the reason
 written out, which is the estate's existing shape. The refusal is the first thing
-either handler does, before any transaction — so a held-back verb never spends
-the idempotency key it was handed.
-
-`RegisterProject` is implemented and **has no caller in this release**:
-organisation-level projects are defined by GitOps rather than created on demand
-(D43, D52).
+either handler does, before any transaction, so a refused verb never spends the
+idempotency key it was handed.
 
 ## `source_repo` names the repository, and the caller supplies it
 
@@ -71,18 +110,18 @@ NAMESPACE and may name no repository of its own — a single-segment anchor like
 so the two values are different by construction and neither is derivable from the
 other.
 
-`RegisterProjectRequest.source_repo` carries it. **Both directions are refused
-rather than defaulted**, which is ADR-0569's rule applied to the one column the
-gateway turns into prose:
+`DeclaredProject.source_repo` carries it, and **absence is refused rather than
+defaulted**. That is ADR-0569's rule, applied to the one column the gateway turns
+into prose:
 
-- an ORG registration sending no `source_repo` answers `INVALID_ARGUMENT`. An
-  earlier build fell back to the row's own path, and a remediation naming a
-  namespace as if it were a repository is worse than the degraded one the gateway
-  emits without the field at all.
-- a PRIVATE registration (`local/...`) sending one answers `INVALID_ARGUMENT` too.
-  `ck_project_class` already makes the combination unstorable, but the engine's
-  answer is `INTERNAL "storage error"`, which names neither the field nor the
-  reason.
+- an org row declared with no `source_repo` gets `INVALID_ARGUMENT`. An earlier
+  build fell back to the row's own path. A remediation that names a namespace as
+  if it were a repository is worse than the degraded one the gateway emits
+  without the field.
+- a PRIVATE registration (`local/...`) that sends a `source_repo` also gets
+  `INVALID_ARGUMENT`. `ck_project_class` already makes the combination
+  unstorable, but the engine's answer is `INTERNAL "storage error"`, which names
+  neither the field nor the reason.
 
 `ResolveProject.source_repo` is **the RESOLVED row's** value and never the
 candidate's. An unregistered path resolves upward to its nearest registered
@@ -203,7 +242,7 @@ have is noise.
 
 ## What is not built yet
 
-**`RenameProject` and `ArchiveProject`**, above, and the retag job they wait on.
+**`RenameProject`**, above, and the retag job it waits on.
 
 **A depth cap.** D53 says the depth of a project path is capped and that the
 limit is CONFIGURATION (D43). ADR-0569 leaves a configuration knob no
@@ -223,7 +262,8 @@ refused as a project of its own: `RegisterProject("local")` answers
 `INVALID_ARGUMENT` naming the value, and `ResolveProject` drops the segment from
 the ancestor walk. `local/<anything>` stays registrable — that is the class the
 reservation exists to carry, and the check is equality on the segment rather than
-a prefix match, so `locals` is an ordinary organisation.
+a prefix match, so `locals` is an ordinary organisation (which `RegisterProject`
+refuses as one, `FAILED_PRECONDITION`, because org rows are the seeder's).
 
 That equality folds ASCII case, and the STORE is what decides it. `project.path`
 and `project_alias.alias_path` collate `utf8mb4_general_ci`, which is case- and

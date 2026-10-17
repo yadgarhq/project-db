@@ -22,6 +22,7 @@ fn all() -> Vec<Migration> {
         project_alias(),
         project_write_idempotency(),
         pin_the_path_collation(),
+        project_sync_lock(),
     ]
 }
 
@@ -61,6 +62,11 @@ fn all() -> Vec<Migration> {
 /// against a seeded row. The column and its index belong to the store rather
 /// than to the verb, which is what makes that verb's return an edit to
 /// `write.rs` alone rather than a migration on a live database.
+///
+/// **BOTH PARAGRAPHS ARE HISTORY NOW**: `SyncProjects` (`src/write/sync.rs`,
+/// migration 5's lock) writes `ARCHIVED` and moves `version` on every row it
+/// updates, reactivates or archives. Kept because they say why the column and
+/// the index predate their writer.
 ///
 /// **NOTHING MOVES `version` EITHER, FOR THE SAME REASON.** `RenameProject` and
 /// `ArchiveProject` were its only movers, so every row in this release sits at 1
@@ -375,6 +381,41 @@ fn pin_the_path_collation() -> Migration {
               ALTER TABLE project_alias
                 MODIFY alias_path VARCHAR(255)
                   CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL"
+            .into(),
+    }
+}
+
+/// THE SENTINEL ROW `SyncProjects` LOCKS FIRST (`src/write/sync.rs`,
+/// `plans/the-d35-seeder.md` step 2). One table, one row, and nothing reads or
+/// writes it except `SELECT … FOR UPDATE` at the top of a sync.
+///
+/// **WHY A ROW AND NOT THE ROWS A SYNC CHANGES.** On a cold install there are
+/// no org-class rows, and a `FOR UPDATE` over an empty range takes no lock that
+/// excludes another one — an InnoDB gap lock is inhibitive only, the
+/// construction `write::register::alias_owner`'s comment measures and ADR-0513
+/// forbids. Two first syncs would both read "nothing here", both insert the
+/// root, and one would die on `uq_project_path`. This row always exists, so its
+/// record lock always serialises, and the commit or the rollback releases it.
+///
+/// **`GET_LOCK` IS THE OTHER SHAPE AND IT IS REJECTED**: a named lock belongs to
+/// the SESSION, so a pooled connection handed back on an error path before
+/// `RELEASE_LOCK` keeps it — and it is server-wide, the defect ledger 1245
+/// files against `yadgar-store`'s migration lock.
+///
+/// **RE-RUNNABLE.** DDL is not transactional on this engine, so a failure
+/// between the two statements leaves the ledger row unwritten and the next boot
+/// runs both again; `IF NOT EXISTS` and `INSERT IGNORE` make the second run a
+/// no-op. The CHECK pins the one row: a second could only be a mistake, and a
+/// sync locking row 1 would not exclude a writer that locked row 2.
+fn project_sync_lock() -> Migration {
+    Migration {
+        version: 5,
+        name: "project_sync_lock".into(),
+        sql: "CREATE TABLE IF NOT EXISTS project_sync_lock (
+                  id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+                  CONSTRAINT ck_project_sync_lock_one CHECK (id = 1)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+              INSERT IGNORE INTO project_sync_lock (id) VALUES (1)"
             .into(),
     }
 }

@@ -153,8 +153,8 @@ impl ProjectDb {
         // ACTIVE, assigned. `RegisterProjectRequest` carries no status field, so
         // there is nothing here a caller could have asked for and been refused.
         .bind(ProjectStatus::Active as i8)
-        .bind(class.source_repo.as_deref())
-        .bind(class.owner_user_id.as_deref())
+        .bind(None::<&str>) // `source_repo`: a private row carries an owner instead.
+        .bind(&class.owner_user_id)
         .bind(class.visibility)
         .bind(&scope.user_id)
         .bind(&scope.user_id)
@@ -185,125 +185,72 @@ impl ProjectDb {
     }
 }
 
-/// The class columns a registration lands with: the CLASS from the path, the
-/// ORG class's repository from the REQUEST.
-///
-/// # The class itself is not a field on the request, and it does not need to be
+/// The class columns a PRIVATE registration lands with — the only class this
+/// rpc registers since `SyncProjects` became the one writer of org-class rows
+/// (ADR-0936; the refusal is at the top of `register`).
 ///
 /// ADR-0605 made the class structural, so `local/<account>/<path>` IS the private
 /// class by construction of the id and [`crate::path::is_private_class`] reads it
 /// off the path — the same predicate `ck_project_class_path` applies in the
 /// engine, spelled twice on purpose so a disagreement is impossible rather than
-/// unlikely. Nothing on the wire could override that without letting a caller
-/// declare a class its own path contradicts.
+/// unlikely.
 ///
-/// # `source_repo` COMES FROM THE CALLER NOW, AND THE PLACEHOLDER IS GONE
+/// **A PRIVATE REGISTRATION CARRYING A `source_repo` IS REFUSED, and by this
+/// function rather than by the engine.** `ck_project_class` requires exactly one
+/// of `source_repo` and `owner_user_id`, so the combination is already impossible
+/// to store — but what a caller would receive is `sql::internal`'s
+/// `INTERNAL "storage error"`, which names neither the field nor the reason.
 ///
-/// This type used to give an org registration its OWN PATH as `source_repo`, and
-/// said so against itself: wrong for a namespace anchor, whose path is a single
-/// segment naming a NAMESPACE while the repository governing it is one beneath;
-/// wrong again for a marker-declared monorepo subpath, where `yadgarhq/docs/plans`
-/// is governed by `yadgarhq/docs`. The comment it left added that neither was
-/// fixable without a contract field, and that no stage of
-/// `plans/project-validation.md` as written commissioned one.
-///
-/// **`RegisterProjectRequest.source_repo` IS THAT FIELD** (`yadgarhq/proto`
-/// v1.13.0), and this module now pins `v1.15.0`. So the value is the CALLER'S,
-/// the placeholder is deleted, and an anchor registered by the seed repository
-/// names the repository that governs the namespace rather than naming the
-/// namespace.
-///
-/// # Both directions are REFUSED rather than defaulted
-///
-/// **AN ORG REGISTRATION WITHOUT `source_repo` IS `INVALID_ARGUMENT`.** Falling
-/// back to the path is the defect above, and ADR-0569's rule is that a missing
-/// input is refused rather than silently defaulted — a wrong remediation is worse
-/// than an absent one, because the gateway composes prose from this column and
-/// would instruct an operator to open a pull request against a namespace. The
-/// refusal is affordable: measured across the estate on 2026-09-12, NO caller of
-/// `RegisterProject` exists in any repository, and the CLI serves `Login`, `Enrol`
-/// and `Serve` only — so there is no request shape this turns off and nothing
-/// seeded to migrate.
-///
-/// # Where the two refusals happen, and why it is not a correctness question
-///
-/// `Class::of` is called ABOVE `pool.begin()`, which is where
-/// `path::refuse_reserved_root` sits and for the argument that comment makes: a
-/// request that cannot succeed should not take a connection out of the pool and
-/// open a transaction to be told so. Now that this type REFUSES, it is a
-/// validation and belongs with the other ones.
-///
-/// **THAT PLACEMENT IS A COST ARGUMENT AND NOT A CORRECTNESS ONE**, which is worth
-/// stating so nobody restores it as though a row depended on it. A refusal below
-/// `idem::claim` would roll the claim back with the transaction and leave the key
-/// free — transaction ATOMICITY, the same answer `register`'s own comment gives
-/// about the alias check — so no row lands and no key is spent either way.
-///
-/// **A PRIVATE REGISTRATION CARRYING ONE IS REFUSED TOO, and by this function
-/// rather than by the engine.** `ck_project_class` requires exactly one of
-/// `source_repo` and `owner_user_id`, so the combination is already impossible to
-/// store — but what a caller would receive is `sql::internal`'s
-/// `INTERNAL "storage error"`, which names neither the field nor the reason. A
-/// request that sets both is a caller error and reads as one here.
+/// Called ABOVE `pool.begin()`, on the cost argument `path::refuse_reserved_root`
+/// makes: a request that cannot succeed should not take a connection out of the
+/// pool to be told so. A refusal below `idem::claim` would roll the claim back
+/// with the transaction anyway, so this placement is cost, not correctness.
 struct Class {
-    source_repo: Option<String>,
-    owner_user_id: Option<String>,
+    owner_user_id: String,
     visibility: i8,
 }
 
 impl Class {
-    /// `source_repo` is the request's field, EMPTY MEANING ABSENT.
+    /// `source_repo` is the request's field, EMPTY MEANING ABSENT — proto3
+    /// gives a bare `string` no presence bit.
     ///
-    /// proto3 gives a bare `string` no presence bit, so `""` is the only spelling
-    /// absence has on the wire, and the contract says so from the other side: a
-    /// consumer reads empty as absent. An org request whose field is empty has
-    /// therefore sent nothing, and is refused by the same branch as one that
-    /// omitted the field — because on the wire they are the same request.
+    /// **AN ORG-CLASS PATH IS REFUSED FIRST: THE ONE-WRITER RULE, MADE
+    /// MECHANICAL** (ADR-0705, ADR-0936). An organisation project is declared
+    /// in the GitOps repository and written by `SyncProjects`; this rpc is the
+    /// private class's path, so the two writers are disjoint by
+    /// `ck_project_class` rather than by a convention. `FAILED_PRECONDITION`
+    /// and not `INVALID_ARGUMENT`: the path is well-formed, and what refuses it
+    /// is who owns its class.
     fn of(path: &str, actor: &str, source_repo: &str) -> Result<Self, Status> {
-        if crate::path::is_private_class(path) {
-            if !source_repo.is_empty() {
-                return Err(Status::invalid_argument(format!(
-                    "source_repo was sent as {source_repo:?} for the private-class path \
-                     {path:?}. A `local/...` project belongs to one account and carries an \
-                     owner, never a repository — `ck_project_class` in the store admits \
-                     exactly one of the two, so this row cannot exist. Omit source_repo"
-                )));
-            }
-            Ok(Self {
-                source_repo: None,
-                // THE CALLER, and the ACCOUNT SEGMENT IS NOT CHECKED AGAINST IT
-                // HERE. ADR-0605 requires that a `local/<account>/…` registration
-                // carry the caller's own account, and assigns the check to ledger
-                // 641's composition point rather than to this module: the account
-                // RENDERING is an open choice there, and `project-db` cannot map a
-                // `user_id` onto a path segment without it. `scope.user_id` is the
-                // gateway-resolved identity (never self-asserted), so the owner
-                // recorded here is right; what is not yet enforced is that it
-                // matches the segment.
-                owner_user_id: Some(actor.to_string()),
-                // D12's default for the private class.
-                visibility: Visibility::Private as i8,
-            })
-        } else {
-            if source_repo.is_empty() {
-                return Err(Status::invalid_argument(format!(
-                    "source_repo is required to register the organisation-class path {path:?} \
-                     and was not sent. An org project is governed by a repository's pull \
-                     request flow, and that repository is what a refusal to resolve an \
-                     unregistered path names — a path is a NAMESPACE and may name no \
-                     repository of its own, so it cannot be used instead. Send the repository \
-                     whose PR flow governs this path"
-                )));
-            }
-            Ok(Self {
-                // THE CALLER'S, AND NEVER THE PATH. See this type's header: the
-                // path is what the placeholder used to be, and it is wrong for a
-                // namespace anchor and for a monorepo subpath.
-                source_repo: Some(source_repo.to_string()),
-                owner_user_id: None,
-                visibility: Visibility::Org as i8,
-            })
+        if !crate::path::is_private_class(path) {
+            return Err(Status::failed_precondition(format!(
+                "{path:?} is an organisation project path. Organisation projects are declared \
+                 in the GitOps repository and written by the seeder (ADR-0934, ADR-0936); \
+                 RegisterProject registers a private `local/<account>/...` project only"
+            )));
         }
+        if !source_repo.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "source_repo was sent as {source_repo:?} for the private-class path \
+                 {path:?}. A `local/...` project belongs to one account and carries an \
+                 owner, never a repository — `ck_project_class` in the store admits \
+                 exactly one of the two, so this row cannot exist. Omit source_repo"
+            )));
+        }
+        Ok(Self {
+            // THE CALLER, and the ACCOUNT SEGMENT IS NOT CHECKED AGAINST IT
+            // HERE. ADR-0605 requires that a `local/<account>/…` registration
+            // carry the caller's own account, and assigns the check to ledger
+            // 641's composition point rather than to this module: the account
+            // RENDERING is an open choice there, and `project-db` cannot map a
+            // `user_id` onto a path segment without it. `scope.user_id` is the
+            // gateway-resolved identity (never self-asserted), so the owner
+            // recorded here is right; what is not yet enforced is that it
+            // matches the segment.
+            owner_user_id: actor.to_string(),
+            // D12's default for the private class.
+            visibility: Visibility::Private as i8,
+        })
     }
 }
 
