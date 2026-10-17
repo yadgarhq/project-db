@@ -103,9 +103,11 @@ fn pki() -> Pki {
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let cert = params.signed_by(&key, &ca).unwrap();
 
-    // THE SHAPE `platform` ISSUES: a common name, no SAN, `clientAuth`.
+    // THE SHAPE `platform` ISSUES: a common name, a dNSName SAN equal to it
+    // (`chart/templates/certificates.yaml` renders `dnsNames: [commonName]`),
+    // and `clientAuth`.
     let client_key = KeyPair::generate().unwrap();
-    let mut client_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    let mut client_params = CertificateParams::new(vec!["project-caller".to_string()]).unwrap();
     client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
     client_params
         .distinguished_name

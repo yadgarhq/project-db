@@ -478,8 +478,37 @@ async fn two_first_syncs_into_an_empty_store_serialise_and_both_succeed() {
     let roots = [root()];
     let first = w.sync(&roots, &d1, false);
     let second = w.sync(&roots, &d2, false);
+    // RELEASED ONLY ONCE BOTH SYNCS ARE OBSERVED BLOCKED on the sentinel
+    // statement, rather than after a guessed sleep.
+    //
+    // **READ FROM `PROCESSLIST`, NOT `INNODB_LOCK_WAITS`, AND THAT IS
+    // MEASURED.** On `mariadb:11.8` the two waiting syncs sit in state
+    // `Statistics` — the optimizer reads a primary-key point lookup as a const
+    // table, so the row lock is requested during optimization — and neither
+    // `INNODB_LOCK_WAITS` nor `INNODB_TRX` listed them after 10 s of waiting
+    // (only the holder appeared). The processlist does show both, executing
+    // the sentinel statement. The poller's own query names the table too, so
+    // it excludes itself.
     let release = async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM information_schema.PROCESSLIST
+                  WHERE DB = DATABASE() AND ID <> CONNECTION_ID() AND COMMAND = 'Execute'
+                    AND INFO LIKE 'SELECT id FROM project_sync_lock%FOR UPDATE'",
+            )
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+            if waiting >= 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "both syncs should be queued on the sentinel row; {waiting} waiting after 10s"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         holder.commit().await.unwrap();
     };
     let (r1, r2, ()) = tokio::join!(first, second, release);

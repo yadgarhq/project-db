@@ -6,8 +6,9 @@
 //! the identity passed in. This proves the other half: the gRPC handler reads
 //! that identity off the client certificate the listener verified — through
 //! `boot::server`, the one function `main` builds its server with, under
-//! `required`, with platform-shaped leaves (a common name, no SAN, `clientAuth`)
-//! from ONE authority. Every leaf verifies; only the name differs.
+//! `required`, with platform-shaped leaves (a common name, a dNSName SAN equal
+//! to it, `clientAuth`) from ONE authority. Every leaf verifies; only the name
+//! differs.
 
 mod support;
 use support::*;
@@ -64,7 +65,7 @@ impl Pki {
     /// A client leaf as `platform` issues one: `commonName: <module>-caller`.
     fn client(&self, common_name: &str) -> Identity {
         let key = KeyPair::generate().unwrap();
-        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        let mut params = CertificateParams::new(vec![common_name.to_string()]).unwrap();
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         params
             .distinguished_name

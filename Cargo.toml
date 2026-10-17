@@ -58,11 +58,7 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # `serve_tls::caller_common_name` (lifecycle#31) is what `SyncProjects` reads
 # its caller's identity with (ADR-0936), so `project` and this store parse a
 # client leaf one way.
-#
-# PINNED BY REVISION, TEMPORARILY: lifecycle#31's head, because the tag that
-# carries it does not exist yet. This line moves to that tag (v0.2.23) before
-# this pull request merges; a revision pin is not a release pin.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", rev = "1845e55d0ee3c257bfdc92ae0f9ae18b79dff151", features = ["serve-tls"] }
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.23", features = ["serve-tls"] }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
