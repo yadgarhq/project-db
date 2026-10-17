@@ -35,7 +35,7 @@ prost-types = "0.14"
 # crate. `v0.1.2` is `v0.1.1` with its own vendored proto pin moved to v1.10.2 —
 # a provable no-op, taken because a new repository pinning a stale tag is a
 # choice that would need a reason and has none.
-yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.1.17", features = ["grpc"] }
+yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.2.0", features = ["grpc"] }
 # WHICH SIGNALS END THIS PROCESS, and the ADR-0523 rotation watcher, decided once
 # for the estate rather than once per repository (ADR-0526's pin, D19's rule).
 #
@@ -104,7 +104,7 @@ rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"]
 # task, project all carry it) — `default_request_timeout`'s 30s is unchanged
 # since, so there is no reason for this, the one dev-only reader, to sit
 # ahead of every real caller.
-yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.17" }
+yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.20" }
 # For the SAME test: `chart/values.schema.json` is JSON, and parsing its
 # `database.acquireTimeoutSeconds.maximum` by hand is the fragile string-
 # scanning this format does not need. Already in this tree transitively
