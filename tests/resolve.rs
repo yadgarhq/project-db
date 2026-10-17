@@ -441,9 +441,15 @@ const GOVERNING_REPO: &str = "pangolin-7c21/estate";
 #[tokio::test]
 async fn a_descendant_resolves_to_the_ancestors_repository_and_never_to_its_own_path() {
     let w = world("project_db_resolve_source_repo_ancestor").await;
-    w.register_with_repo(A, "Alpha", GOVERNING_REPO)
-        .await
-        .expect("an org registration naming the repository that governs it");
+    // THROUGH THE ORG WRITER: `SyncProjects` declares A with the repository
+    // that governs it, under its root (ADR-0936).
+    w.sync(
+        &[declared(ROOT, "", FIXTURE_REPO)],
+        &[declared(A, "Alpha", GOVERNING_REPO)],
+        false,
+    )
+    .await
+    .expect("an org declaration naming the repository that governs it");
 
     // A_DEEP is INSIDE A and is registered nowhere, which is the case the field
     // exists for: a caller working in a directory nobody has registered yet.
@@ -541,13 +547,14 @@ async fn a_private_class_row_resolves_with_an_empty_repository_rather_than_a_sen
 #[tokio::test]
 async fn an_alias_matched_resolve_answers_with_the_live_rows_repository() {
     let w = world("project_db_resolve_source_repo_alias").await;
-    let id = w
-        .register_with_repo(B, "Bravo", GOVERNING_REPO)
-        .await
-        .expect("register")
-        .meta
-        .expect("meta")
-        .id;
+    w.sync(
+        &[declared(ROOT, "", FIXTURE_REPO)],
+        &[declared(B, "Bravo", GOVERNING_REPO)],
+        false,
+    )
+    .await
+    .expect("sync");
+    let id = w.get(B).await.expect("get").meta.expect("meta").id;
     // Seeded: `RenameProject` is held back in this release, and the alias read
     // paths are contract obligations regardless — see `World::seed_alias`.
     w.seed_alias(A, &id).await;

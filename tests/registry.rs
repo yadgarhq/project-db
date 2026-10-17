@@ -6,6 +6,14 @@ use support::*;
 
 use yadgar_project_db::pb::yadgar::project::v1::ProjectStatus;
 
+/// PRIVATE-CLASS paths, shadowing the fixture's org-class `A` and `B`, and
+/// their parent. `RegisterProject` registers the private class only since
+/// `SyncProjects` became the org writer (ADR-0936), so its own tests are about
+/// paths it will register. The org writer's are in `tests/sync.rs`.
+const P: &str = "local/jaguar-4f80";
+const A: &str = "local/jaguar-4f80/alpha";
+const B: &str = "local/jaguar-4f80/bravo";
+
 async fn world(name: &str) -> World {
     World::fresh(name).await
 }
@@ -174,16 +182,26 @@ async fn rename_and_archive_refuse_and_say_why() {
     let w = world("project_db_registry_held_back").await;
     w.register(A).await;
 
-    for err in [
-        w.rename(A, B, 1).await.expect_err("rename is held back"),
-        w.archive(A, 1).await.expect_err("archive is held back"),
+    // The REASON, not merely a refusal. Rename is blocked on records — the
+    // retag job — so retrying it later against the same estate is the obvious
+    // wrong response, and the message has to say so. Archive is not held back
+    // but never built per row: the whole-set sync archives (ADR-0936), and the
+    // message names it.
+    for (err, expected) in [
+        (
+            w.rename(A, B, 1).await.expect_err("rename is held back"),
+            ["retag", "RenameProject returns with that retag job"],
+        ),
+        (
+            w.archive(A, 1)
+                .await
+                .expect_err("archive is not a per-row verb"),
+            ["SyncProjects", "no per-row archive verb"],
+        ),
     ] {
         assert_eq!(err.code(), tonic::Code::Unimplemented);
         let message = err.message();
-        // The REASON, not merely a refusal. A caller reading this has to learn
-        // that the block is about records rather than about the verb, or the
-        // obvious response is to retry it later against the same estate.
-        for expected in ["retag", "RenameProject and ArchiveProject return together"] {
+        for expected in expected {
             assert!(
                 message.contains(expected),
                 "the refusal no longer carries {expected:?}: {message}"
@@ -218,11 +236,11 @@ async fn a_display_name_wider_than_the_column_is_refused_rather_than_truncated()
     // A NAME NO ASCII TEST DISTINGUISHES. `.len()` counts 1020 here and refuses;
     // the column counts 255 and stores.
     let wide = "\u{1F600}".repeat(255);
-    w.try_register(&format!("{ROOT}/wide-name"), &wide)
+    w.try_register(&format!("{P}/wide-name"), &wide)
         .await
         .expect("255 characters is what the column holds, whatever they cost in bytes");
     assert_eq!(
-        w.get(&format!("{ROOT}/wide-name"))
+        w.get(&format!("{P}/wide-name"))
             .await
             .expect("get")
             .display_name,
@@ -238,7 +256,7 @@ async fn a_display_name_wider_than_the_column_is_refused_rather_than_truncated()
         ("256 characters of emoji", "\u{1F600}".repeat(256)),
     ] {
         let err = w
-            .try_register(&format!("{ROOT}/too-wide"), &name)
+            .try_register(&format!("{P}/too-wide"), &name)
             .await
             .expect_err(what);
         assert_eq!(err.code(), tonic::Code::InvalidArgument, "{what}");
@@ -246,7 +264,7 @@ async fn a_display_name_wider_than_the_column_is_refused_rather_than_truncated()
 
     // AND THE ASCII BOUND ITSELF, so that widening the check cannot pass
     // unnoticed either.
-    w.try_register(&format!("{ROOT}/at-the-bound"), &"n".repeat(255))
+    w.try_register(&format!("{P}/at-the-bound"), &"n".repeat(255))
         .await
         .expect("255 characters of ASCII is the column's width, not one past it");
 
@@ -333,9 +351,19 @@ async fn the_reserved_private_class_root_is_not_registrable() {
     w.try_register("local/home/max/src/alpha", "")
         .await
         .expect("a project beneath the reserved segment IS the private class");
-    w.try_register("locals", "a different organisation entirely")
+    // `locals` IS AN ORGANISATION, so it is refused — but as an ORG path
+    // (FAILED_PRECONDITION, ADR-0936), never as the reserved segment
+    // (INVALID_ARGUMENT). The code is what tells a prefix from a segment.
+    let err = w
+        .try_register("locals", "a different organisation entirely")
         .await
-        .expect("`locals` merely shares five characters; a prefix is not a segment");
+        .expect_err("an org path is the seeder's to write");
+    assert_eq!(
+        err.code(),
+        tonic::Code::FailedPrecondition,
+        "`locals` merely shares five characters; a prefix is not a segment: {}",
+        err.message()
+    );
 }
 
 /// **THE COLLATION IS WHAT MAKES A BYTE-EXACT REFUSAL INSUFFICIENT.**
@@ -380,9 +408,16 @@ async fn an_upper_case_spelling_of_the_reserved_root_is_refused_too() {
     w.try_register("LOCAL/home/max/src/alpha", "")
         .await
         .expect("a project beneath the reserved segment IS the private class, in any spelling");
-    w.try_register("LOCALS", "a different organisation entirely")
+    let err = w
+        .try_register("LOCALS", "a different organisation entirely")
         .await
-        .expect("`LOCALS` merely shares five characters; a prefix is not a segment");
+        .expect_err("an org path is the seeder's to write");
+    assert_eq!(
+        err.code(),
+        tonic::Code::FailedPrecondition,
+        "`LOCALS` merely shares five characters; a prefix is not a segment: {}",
+        err.message()
+    );
 
     // THE SLOT ALREADY TAKEN. `ALREADY_EXISTS` here would mean the guard let the
     // call through and the ENGINE stopped it, not this service.

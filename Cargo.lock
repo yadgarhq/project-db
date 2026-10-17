@@ -2779,7 +2779,7 @@ dependencies = [
 [[package]]
 name = "yadgar-lifecycle"
 version = "0.1.0"
-source = "git+https://github.com/yadgarhq/lifecycle.git?tag=v0.2.20#7c1ee65a6b9a49ec04aa60db05e10c9a4af6492a"
+source = "git+https://github.com/yadgarhq/lifecycle.git?rev=1845e55d0ee3c257bfdc92ae0f9ae18b79dff151#1845e55d0ee3c257bfdc92ae0f9ae18b79dff151"
 dependencies = [
  "metrics",
  "rustls",

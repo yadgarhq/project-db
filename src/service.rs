@@ -2,7 +2,7 @@
 //! this module deliberately does NOT do with a `Scope`.
 //!
 //! One RPC is one transaction (D5). The operations themselves live next door —
-//! `read` for the three that answer questions, `write` for the four that change
+//! `read` for the three that answer questions, `write` for the five that change
 //! something — because what a handler does HERE is start a `Call`, hand off, and
 //! record what came back.
 //!
@@ -52,6 +52,7 @@
 
 use sqlx::MySqlPool;
 use tonic::{Request, Response, Status};
+use yadgar_lifecycle::serve_tls::caller_common_name;
 use yadgar_telemetry::estimator::Class;
 use yadgar_telemetry::grpc::status_name;
 use yadgar_telemetry::observe::{Call, Outcome};
@@ -64,6 +65,10 @@ use crate::sql::tel_scope;
 /// This service's name, on every telemetry record and on the rotation watcher's
 /// gauges. ONE spelling, because a dashboard selects on it.
 pub const SERVICE: &str = "project-db";
+
+/// The ONE caller `SyncProjects` admits: the common name on `project`'s client
+/// leaf, as `platform` issues it (`project-client-tls`, ADR-0936).
+pub const SYNC_CALLER: &str = "project-caller";
 
 pub struct ProjectDb {
     pub(crate) pool: MySqlPool,
@@ -175,6 +180,30 @@ impl ProjectDbService for ProjectDb {
         call.run(
             async move { self.touch(req).await },
             |r| envelope(r, rows),
+            status_name,
+        )
+        .await
+        .map(Response::new)
+    }
+
+    async fn sync_projects(
+        &self,
+        request: Request<SyncProjectsRequest>,
+    ) -> Result<Response<SyncProjectsResponse>, Status> {
+        // READ BEFORE THE REQUEST IS CONSUMED: the peer chain lives on the
+        // request's extensions, and `into_inner` drops them.
+        let caller = caller_common_name(&request);
+        let req = request.into_inner();
+        let call = Call::start(SERVICE, "SyncProjects", Kind::Write, tel_scope(&req.scope));
+
+        call.run(
+            async move { self.sync_as(caller.as_deref(), req).await },
+            |r| {
+                envelope(
+                    r,
+                    r.inserted + r.updated + r.archived + r.reactivated + r.unchanged,
+                )
+            },
             status_name,
         )
         .await

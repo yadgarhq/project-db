@@ -238,14 +238,46 @@ impl World {
             .map(|r| r.into_inner())
     }
 
-    /// Register and answer with the id, which is what most tests want.
+    /// Put a project at *path* and answer with its id, which is what most tests
+    /// want.
+    ///
+    /// **A PRIVATE PATH GOES THROUGH `RegisterProject`; AN ORG PATH IS WRITTEN
+    /// STRAIGHT INTO THE TABLE.** `RegisterProject` refuses an org-class path
+    /// now (ADR-0936), and the one writer of org rows is `SyncProjects` — which
+    /// archives every org row a declaration omits, so a test adding rows one at
+    /// a time cannot use it without restating every earlier row. The row this
+    /// writes is the one `RegisterProject` used to write — a URN id, version 1,
+    /// ACTIVE, ORG-visible, [`FIXTURE_REPO`] as its repository — and the tests
+    /// that are ABOUT the org writer drive `SyncProjects` (`tests/sync.rs`).
     pub async fn register(&self, path: &str) -> String {
-        self.try_register(path, path)
-            .await
-            .expect("register")
-            .meta
-            .expect("meta")
-            .id
+        if is_private_path(path) {
+            return self
+                .try_register(path, path)
+                .await
+                .expect("register")
+                .meta
+                .expect("meta")
+                .id;
+        }
+        let id = format!("yadgar:project:{}", uuid::Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO project
+               (id, version, path, display_name, status, source_repo, owner_user_id, visibility,
+                created_by, updated_by)
+             VALUES (?, 1, ?, ?, ?, ?, NULL, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(path)
+        .bind(path)
+        .bind(ProjectStatus::Active as i8)
+        .bind(FIXTURE_REPO)
+        .bind(Visibility::Org as i8)
+        .bind(U1)
+        .bind(U1)
+        .execute(&self.pool)
+        .await
+        .expect("seed an org row");
+        id
     }
 
     pub async fn resolve(&self, candidate: &str) -> Result<ResolveProjectResponse, Status> {
@@ -652,6 +684,90 @@ impl World {
             .fetch_one(&self.pool)
             .await
             .expect("count")
+    }
+
+    /// Every row in `project`, of either class. A refusal that wrote nothing
+    /// leaves this number where it was.
+    pub async fn project_count(&self) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM project")
+            .fetch_one(&self.pool)
+            .await
+            .expect("count")
+    }
+
+    /// `SyncProjects` as `project` calls it: the identity `project`'s leaf
+    /// names, which the gRPC handler reads off the peer certificate
+    /// (`tests/sync_caller.rs` proves that half over real handshakes).
+    pub async fn sync(
+        &self,
+        roots: &[DeclaredProject],
+        projects: &[DeclaredProject],
+        allow_mass_archive: bool,
+    ) -> Result<SyncProjectsResponse, Status> {
+        self.db
+            .sync_as(
+                Some(yadgar_project_db::service::SYNC_CALLER),
+                self.sync_request(roots, projects, allow_mass_archive),
+            )
+            .await
+    }
+
+    /// The one `SyncProjectsRequest` literal in this fixture. EXHAUSTIVE, for
+    /// the reason [`World::register_request`] gives.
+    pub fn sync_request(
+        &self,
+        roots: &[DeclaredProject],
+        projects: &[DeclaredProject],
+        allow_mass_archive: bool,
+    ) -> SyncProjectsRequest {
+        SyncProjectsRequest {
+            scope: Some(Scope {
+                user_id: SEEDER.into(),
+                project_id: String::new(),
+                team_ids: Vec::new(),
+                instance_id: String::new(),
+                request_id: "r-sync".into(),
+                owner_reads_own_record: None,
+            }),
+            roots: roots.to_vec(),
+            projects: projects.to_vec(),
+            allow_mass_archive,
+        }
+    }
+
+    /// `(path, status, version, display_name, source_repo)` for every org-class
+    /// row, ordered by path. The whole state a sync owns, in one read.
+    pub async fn org_rows(&self) -> Vec<(String, i8, u64, String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT path, status, version, display_name, source_repo FROM project
+              WHERE owner_user_id IS NULL ORDER BY path",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .expect("org rows")
+    }
+
+    /// The paths of the ACTIVE org-class rows, ordered.
+    pub async fn active_org_paths(&self) -> Vec<String> {
+        self.org_rows()
+            .await
+            .into_iter()
+            .filter(|r| r.1 == ProjectStatus::Active as i8)
+            .map(|r| r.0)
+            .collect()
+    }
+}
+
+/// The seeder's system principal (ADR-0942). The store stamps it as
+/// `created_by` and `updated_by`; it does not check it — `project` does.
+pub const SEEDER: &str = "yadgar:system:seeder";
+
+/// One declared row.
+pub fn declared(path: &str, display_name: &str, source_repo: &str) -> DeclaredProject {
+    DeclaredProject {
+        path: path.into(),
+        display_name: display_name.into(),
+        source_repo: source_repo.into(),
     }
 }
 
