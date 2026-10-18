@@ -152,9 +152,11 @@ filtering by it could only return what the caller already assumed, and the
 ancestor walk D52 requires would be unreachable. `ListProjects` carries its own
 subtree parameter, `under_path`. `Project` carries no visibility or team.
 `Meta.owner_user_id` carries the registrant of a private (`local/...`) row and is
-empty on an org row; the GATEWAY enforces that owner on calls into the project
-(`plans/project-membership.md`, ADR-0947), and this store makes no per-row
-decision against it.
+empty on an org row. The GATEWAY will enforce that owner on calls into the
+project (`plans/project-membership.md`, ADR-0947): car P2 will relay it through
+`project`'s `ListProjects`, car P3 will add the gateway check, and the check will
+refuse only under Enforcing (ADR-0841). This store makes no per-row decision
+against it.
 
 **So the registry is readable deployment-wide, and that is stated rather than
 left to be inferred from code that happens not to filter.** One deployment is one

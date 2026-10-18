@@ -71,3 +71,25 @@ async fn get_reports_the_same_owner_list_reports_for_both_classes() {
     }
     assert_eq!(owner(&w.get(PRIVATE).await.expect("get")), U2);
 }
+
+/// `RegisterProject` writes private rows only (ADR-0936), and the owner it
+/// stores is the caller. Its answer reports that owner, so a registrant never
+/// sees a `Meta` that disagrees with what `GetProject` returns a moment later.
+#[tokio::test]
+async fn the_register_answer_reports_the_owner_it_stored() {
+    let w = World::fresh("owner_register").await;
+    let answer = w
+        .register_as(PRIVATE, "notes", U2, None)
+        .await
+        .expect("register the private row as U2");
+    let meta = answer.meta.expect("meta");
+    assert_eq!(
+        meta.owner_user_id, U2,
+        "the register answer names its owner"
+    );
+    assert_eq!(
+        meta.owner_user_id,
+        owner(&w.get(PRIVATE).await.expect("get")),
+        "the register answer and GetProject disagree on the owner"
+    );
+}

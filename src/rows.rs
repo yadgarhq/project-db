@@ -58,13 +58,16 @@ pub fn at(seconds: i64) -> Timestamp {
 /// asked.
 ///
 /// **`owner_user_id` IS THE STORED OWNER: the registrant on a PRIVATE row,
-/// empty on an ORG row.** Migration 6 gave `project` an `owner_user_id` column,
-/// and `ck_project_class_path` keeps it non-NULL exactly on `local/...` paths,
-/// so a NULL (every org row) reads as `""`. The gateway enforces it:
-/// `plans/project-membership.md` (ledger 1548, ADR-0947) admits only this owner
-/// to a private project, and the owner reaches the gateway through
-/// `ListProjects`. It is not `created_by` for that reason — `created_by` is
-/// audit identity (D12), and only `owner_user_id` is the one the check reads.
+/// empty on an ORG row.** Migration 1 creates the `owner_user_id` column
+/// (`schema.rs`), and migration 6 re-adds it with `IF NOT EXISTS` for stores
+/// migrated before #33. `ck_project_class_path` keeps it non-NULL exactly on
+/// `local/...` paths, so a NULL (every org row) reads as `""`. The gateway WILL
+/// enforce it under `plans/project-membership.md` (ledger 1548, ADR-0947): car
+/// P2 will relay the owner through `project`'s `ListProjects`, car P3 will add
+/// the gateway check that admits only this owner to a private project, and that
+/// check will refuse only under Enforcing (ADR-0841). It is not `created_by`
+/// for that reason — `created_by` is audit identity (D12), and only
+/// `owner_user_id` is the one the check will read.
 ///
 /// **`team_id` AND `visibility` STAY EMPTY.** The table has no team column, and
 /// the class is the PATH, not the stored `visibility`: reporting both would be

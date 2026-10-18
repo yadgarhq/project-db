@@ -264,17 +264,21 @@ impl Class {
 /// **THE TIMESTAMPS ARE ABSENT HERE, AND THAT IS A STATEMENT RATHER THAN AN
 /// OMISSION.** They are the engine's `CURRENT_TIMESTAMP`, so reporting them would
 /// mean reading the row back for a value no caller of a write has asked for.
-/// `GetProject` returns them. `owner_user_id`, `team_id` and `visibility` are
-/// empty here for the same reason: a write answer reports what the caller needs
-/// to address the row. The stored owner is read back by `GetProject` and
-/// `ListProjects` (`rows.rs`), which is where the gateway's membership check
-/// takes it from.
+/// `GetProject` returns them.
+///
+/// **`owner_user_id` IS `actor`, THE SAME VALUE THE `INSERT` STORED.** This rpc
+/// writes private rows only (ADR-0936; `Class::of` refuses an org path), and a
+/// private row's owner is the caller (`Class::of`). So the answer can state the
+/// owner without reading the row back, and it agrees with what `GetProject` and
+/// `ListProjects` report (`rows.rs`). `team_id` and `visibility` stay empty for
+/// the reason `rows.rs` gives: the table has no team column, and the class is
+/// the path rather than the stored `visibility`.
 fn meta_of(id: &str, version: u64, path: &str, actor: &str) -> Meta {
     Meta {
         id: id.to_string(),
         version,
         project_id: path.to_string(),
-        owner_user_id: String::new(),
+        owner_user_id: actor.to_string(),
         team_id: String::new(),
         visibility: 0,
         created_by: actor.to_string(),
