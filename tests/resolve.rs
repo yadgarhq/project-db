@@ -393,6 +393,15 @@ async fn the_bare_reserved_root_in_upper_case_is_refused_rather_than_emptying_th
     );
 }
 
+/// **THIS IS A TRIPWIRE FOR ANOTHER REPOSITORY (ledger 762).** `project` sends
+/// a `Scope::default()` placeholder on `ResolveProject` only because this check
+/// refuses an absent one (`project/src/service.rs::unattested_placeholder_scope`),
+/// and `project`'s own tests of that placeholder run against a mock store, so
+/// they cannot fail when this check goes. `tests/list.rs`'s
+/// `list_refuses_an_absent_scope` pins the `ListProjects` half. **Flipping this
+/// test is route (c) of `plans/the-project-logic-tier.md` §6. The same PR train
+/// MUST delete `project/src/service.rs::unattested_placeholder_scope` and its
+/// two tests.**
 #[tokio::test]
 async fn an_absent_scope_is_refused() {
     let w = world("project_db_resolve_no_scope").await;
@@ -582,5 +591,96 @@ async fn an_alias_matched_resolve_answers_with_the_live_rows_repository() {
     assert_eq!(
         r.source_repo, GOVERNING_REPO,
         "a descendant of a FORMER parent path still names the repository that governs it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D67's request id, from the header when the Scope carries none (ledger 1254).
+// ---------------------------------------------------------------------------
+
+/// **THE ID `project` FORWARDS IS THE ONE THIS HOP RECORDS.** `project`'s
+/// `ResolveProject` carries no `Scope` of its own, so the one it sends here is
+/// an empty placeholder and the id arrives as `x-yadgar-request-id`. Reading
+/// the `Scope` alone records `""`, and this hop joins to nothing.
+///
+/// **THE MUTATION THAT REDS IT:** drop the header read from `tel_scope`.
+#[tokio::test]
+async fn resolve_records_the_forwarded_request_id_when_the_scope_carries_none() {
+    let w = world("project_db_resolve_request_id_header").await;
+    w.register(A).await;
+
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+    use yadgar_project_db::pb::yadgar::project::v1::ResolveProjectRequest;
+
+    let record = the_call_record(w.db.resolve_project(with_request_id(
+        ResolveProjectRequest {
+            scope: the_tiers_placeholder_scope(),
+            candidate_path: A.into(),
+        },
+        FORWARDED_REQUEST_ID,
+    )))
+    .await;
+
+    assert!(carries(&record, FORWARDED_REQUEST_ID), "{record}");
+}
+
+/// **AN ID IN THE `Scope` WINS OVER THE HEADER.** A `Scope` that carries one was
+/// attested by the gateway, which is the stronger claim; the header stands in
+/// only when the `Scope` is silent. `project` resolves the two in the same
+/// order, so both hops record one id for one call.
+#[tokio::test]
+async fn a_scope_request_id_wins_over_the_header() {
+    let w = world("project_db_resolve_request_id_order").await;
+    w.register(A).await;
+
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+    use yadgar_project_db::pb::yadgar::project::v1::ResolveProjectRequest;
+
+    let record = the_call_record(w.db.resolve_project(with_request_id(
+        ResolveProjectRequest {
+            scope: w.scope(ROOT, U1),
+            candidate_path: A.into(),
+        },
+        FORWARDED_REQUEST_ID,
+    )))
+    .await;
+
+    assert!(carries(&record, "r-1"), "{record}");
+}
+
+/// An over-long header is cut to the bound and marker `project`, `iam` and
+/// `iam-db` apply, so a value `project` already capped arrives unchanged and
+/// the two records join; one that bypassed `project` is bounded here.
+#[tokio::test]
+async fn an_over_long_forwarded_request_id_is_capped_on_the_record() {
+    let w = world("project_db_resolve_request_id_cap").await;
+    w.register(A).await;
+
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+    use yadgar_project_db::pb::yadgar::project::v1::ResolveProjectRequest;
+
+    let long = "z".repeat(1000);
+    let cut = format!("{}...", "z".repeat(256));
+    let record = the_call_record(w.db.resolve_project(with_request_id(
+        ResolveProjectRequest {
+            scope: the_tiers_placeholder_scope(),
+            candidate_path: A.into(),
+        },
+        &long,
+    )))
+    .await;
+    assert!(carries(&record, &cut), "{record}");
+
+    let again = the_call_record(w.db.resolve_project(with_request_id(
+        ResolveProjectRequest {
+            scope: the_tiers_placeholder_scope(),
+            candidate_path: A.into(),
+        },
+        &cut,
+    )))
+    .await;
+    assert!(
+        carries(&again, &cut),
+        "re-capping a capped id changes nothing: {again}"
     );
 }
