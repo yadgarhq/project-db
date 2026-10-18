@@ -15,7 +15,19 @@ use crate::pb::yadgar::common::v1::Scope;
 /// `request_id` and `user_id`, so D67's records join across hops through it and
 /// D9's idempotency ledger is keyed by it. A handler that tolerated its absence
 /// would emit unjoinable telemetry and deduplicate every keyless caller into one
-/// slot.
+/// slot. (`project`'s two read calls are the exception on the telemetry half:
+/// their `Scope` is an empty placeholder, and the id comes from the header — see
+/// [`tel_scope`].)
+///
+/// **THIS CHECK IS A TRIPWIRE FOR ANOTHER REPOSITORY (ledger 762).** `project`
+/// sends a `Scope::default()` placeholder on `ListProjects` and `ResolveProject`
+/// only because this refuses an absent one
+/// (`project/src/service.rs::unattested_placeholder_scope`), and the message
+/// below — "attested by the gateway" — is false for that caller. Pinned by
+/// `tests/resolve.rs`'s `an_absent_scope_is_refused` and `tests/list.rs`'s
+/// `list_refuses_an_absent_scope`. **Flipping those tests is route (c) of
+/// `plans/the-project-logic-tier.md` §6. The same PR train MUST delete
+/// `project/src/service.rs::unattested_placeholder_scope` and its two tests.**
 pub fn scope_of(scope: &Option<Scope>) -> Result<&Scope, Status> {
     scope
         .as_ref()
@@ -26,14 +38,65 @@ pub fn scope_of(scope: &Option<Scope>) -> Result<&Scope, Status> {
 ///
 /// Empty strings when the scope is absent: the call is refused on its own merits,
 /// and telemetry must never be the thing that fails a request (D25).
-pub fn tel_scope(scope: &Option<Scope>) -> yadgar_telemetry::observe::Scope {
+///
+/// **`request_id` FALLS BACK TO THE HEADER WHEN THE `Scope` CARRIES NONE**
+/// (ledger 1254). `header` is [`request_id_of`]'s read of
+/// `x-yadgar-request-id`. `project`'s `ListProjects` and `ResolveProject` carry
+/// no `Scope`, so the one `project` sends here is an empty placeholder and
+/// D67's id arrives in the header instead — the shape `iam` → `iam-db` already
+/// uses. An id the `Scope` does carry wins: it was attested by the gateway, the
+/// stronger claim, and `project` resolves the two in the same order.
+pub fn tel_scope(scope: &Option<Scope>, header: String) -> yadgar_telemetry::observe::Scope {
     let field = |f: fn(&Scope) -> &String| scope.as_ref().map(f).cloned().unwrap_or_default();
+    let request_id = match field(|s| &s.request_id) {
+        attested if !attested.is_empty() => attested,
+        _ => header,
+    };
     yadgar_telemetry::observe::Scope {
-        request_id: field(|s| &s.request_id),
+        request_id,
         instance_id: field(|s| &s.instance_id),
         user_id: field(|s| &s.user_id),
         project_id: field(|s| &s.project_id),
     }
+}
+
+/// How many of a caller's characters `x-yadgar-request-id` may put on a record.
+///
+/// A cut value is at most `REQUEST_ID_CAP + 3` characters, the marker included.
+///
+/// **THE SAME BOUND AND MARKER `project`, `iam` AND `iam-db` APPLY** (their
+/// `REQUEST_ID_CAP`, `CUT_MARKER` and `capped`). A copy rather than a shared
+/// crate because none holds it yet — TODO(1255): replace this copy, the marker
+/// and [`capped`] with the shared crate's when ledger 1255 lands. Until then the
+/// copies must stay identical, or two hops cut one over-long id differently and
+/// their records stop joining.
+const REQUEST_ID_CAP: usize = 256;
+
+/// What marks a cut. ASCII, so a capped id is a valid header value on every hop.
+const CUT_MARKER: &str = "...";
+
+/// `s` cut to [`REQUEST_ID_CAP`] characters, with [`CUT_MARKER`] appended if it
+/// was cut. Capping a capped value changes nothing, so an id `project` already
+/// capped is recorded here unchanged and the two records join.
+fn capped(s: &str) -> std::borrow::Cow<'_, str> {
+    match s.char_indices().nth(REQUEST_ID_CAP) {
+        Some((at, _)) => format!("{}{CUT_MARKER}", &s[..at]).into(),
+        None => s.into(),
+    }
+}
+
+/// D67's join key as `project` forwards it, in `x-yadgar-request-id` (ledger
+/// 1254). Read BEFORE the request is consumed: `into_inner` drops the metadata.
+///
+/// Capped rather than refused, and an absent or unreadable value is `""`,
+/// because a correlation id must never fail a call (D25). A header is bounded
+/// only by the transport, and this `String` reaches the `CallRecord`.
+pub fn request_id_of<T>(req: &tonic::Request<T>) -> String {
+    req.metadata()
+        .get("x-yadgar-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| capped(v).into_owned())
+        .unwrap_or_default()
 }
 
 /// Neutralise the LIKE metacharacters in a value that is about to become part of

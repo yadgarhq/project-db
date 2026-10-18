@@ -224,3 +224,63 @@ async fn an_under_path_that_is_not_a_project_path_is_refused() {
         .expect_err("prose is not a path");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
+
+/// The `ListProjects` half of the presence check `tests/resolve.rs`'s
+/// `an_absent_scope_is_refused` pins for `ResolveProject`.
+///
+/// **THIS IS A TRIPWIRE FOR ANOTHER REPOSITORY (ledger 762).** `project` sends a
+/// `Scope::default()` placeholder on this rpc only because this check refuses
+/// an absent one (`project/src/service.rs::unattested_placeholder_scope`), and
+/// `project`'s own tests of that placeholder run against a mock store, so they
+/// cannot fail when this check goes. **Flipping this test is route (c) of
+/// `plans/the-project-logic-tier.md` §6. The same PR train MUST delete
+/// `project/src/service.rs::unattested_placeholder_scope` and its two tests.**
+#[tokio::test]
+async fn list_refuses_an_absent_scope() {
+    let w = world("project_db_list_no_scope").await;
+    w.register(A).await;
+
+    use tonic::Request;
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+    use yadgar_project_db::pb::yadgar::project::v1::ListProjectsRequest;
+
+    let err =
+        w.db.list_projects(Request::new(ListProjectsRequest {
+            scope: None,
+            under_path: String::new(),
+            status: None,
+            page_size: 0,
+            page_token: String::new(),
+        }))
+        .await
+        .expect_err("an absent scope is refused before any row is read");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+/// **THE ID `project` FORWARDS IS THE ONE THIS HOP RECORDS (ledger 1254).**
+/// `project`'s `ListProjects` carries no `Scope`, so the one it sends here is an
+/// empty placeholder and the id arrives as `x-yadgar-request-id`.
+///
+/// **THE MUTATION THAT REDS IT:** drop the header read from `tel_scope`.
+#[tokio::test]
+async fn list_records_the_forwarded_request_id_when_the_scope_carries_none() {
+    let w = world("project_db_list_request_id_header").await;
+    w.register(A).await;
+
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+    use yadgar_project_db::pb::yadgar::project::v1::ListProjectsRequest;
+
+    let record = the_call_record(w.db.list_projects(with_request_id(
+        ListProjectsRequest {
+            scope: the_tiers_placeholder_scope(),
+            under_path: String::new(),
+            status: None,
+            page_size: 0,
+            page_token: String::new(),
+        },
+        FORWARDED_REQUEST_ID,
+    )))
+    .await;
+
+    assert!(carries(&record, FORWARDED_REQUEST_ID), "{record}");
+}

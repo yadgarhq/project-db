@@ -36,6 +36,12 @@
 //! `user_id` and `project_id`, which key D9's idempotency ledger. An absent one
 //! is a programming error upstream.
 //!
+//! **ONE CALLER'S `Scope` IS EMPTY, AND ITS `request_id` ARRIVES AS A HEADER.**
+//! `project`'s `ListProjects` and `ResolveProject` carry no `Scope`, so `project`
+//! sends an empty placeholder to pass the presence check and forwards D67's id
+//! as `x-yadgar-request-id` (ledger 1254). Every handler reads that header and
+//! [`crate::sql::tel_scope`] records it when the `Scope`'s own id is empty.
+//!
 //! # This module is in ADR-0522's PRE-ENFORCEMENT state, deliberately
 //!
 //! `yadgar/common/v1`'s `Scope.owner_reads_own_record` admits exactly two states
@@ -60,7 +66,7 @@ use yadgar_telemetry::pb::yadgar::telemetry::v1::Kind;
 
 use crate::pb::yadgar::project::v1::project_db_service_server::ProjectDbService;
 use crate::pb::yadgar::project::v1::*;
-use crate::sql::tel_scope;
+use crate::sql::{request_id_of, tel_scope};
 
 /// This service's name, on every telemetry record and on the rotation watcher's
 /// gauges. ONE spelling, because a dashboard selects on it.
@@ -100,12 +106,13 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<RegisterProjectRequest>,
     ) -> Result<Response<RegisterProjectResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
             "RegisterProject",
             Kind::Write,
-            tel_scope(&req.scope),
+            tel_scope(&req.scope, request_id),
         );
 
         call.run(
@@ -121,8 +128,14 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<ResolveProjectRequest>,
     ) -> Result<Response<ResolveProjectResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
-        let call = Call::start(SERVICE, "ResolveProject", Kind::Read, tel_scope(&req.scope));
+        let call = Call::start(
+            SERVICE,
+            "ResolveProject",
+            Kind::Read,
+            tel_scope(&req.scope, request_id),
+        );
 
         call.run(
             async move { self.resolve(req).await },
@@ -137,8 +150,14 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<GetProjectRequest>,
     ) -> Result<Response<GetProjectResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
-        let call = Call::start(SERVICE, "GetProject", Kind::Read, tel_scope(&req.scope));
+        let call = Call::start(
+            SERVICE,
+            "GetProject",
+            Kind::Read,
+            tel_scope(&req.scope, request_id),
+        );
 
         call.run(
             async move { self.get(req).await },
@@ -153,8 +172,14 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
-        let call = Call::start(SERVICE, "ListProjects", Kind::Read, tel_scope(&req.scope));
+        let call = Call::start(
+            SERVICE,
+            "ListProjects",
+            Kind::Read,
+            tel_scope(&req.scope, request_id),
+        );
 
         call.run(
             async move { self.list(req).await },
@@ -169,8 +194,14 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<TouchProjectsRequest>,
     ) -> Result<Response<TouchProjectsResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
-        let call = Call::start(SERVICE, "TouchProjects", Kind::Write, tel_scope(&req.scope));
+        let call = Call::start(
+            SERVICE,
+            "TouchProjects",
+            Kind::Write,
+            tel_scope(&req.scope, request_id),
+        );
         // THE ROW COUNT IS THE SIZE OF THE FLUSH, and it is read before the
         // request is consumed. `TouchProjectsResponse` is empty, so a count taken
         // from the response would be one for a statement that wrote five hundred
@@ -193,8 +224,14 @@ impl ProjectDbService for ProjectDb {
         // READ BEFORE THE REQUEST IS CONSUMED: the peer chain lives on the
         // request's extensions, and `into_inner` drops them.
         let caller = caller_common_name(&request);
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
-        let call = Call::start(SERVICE, "SyncProjects", Kind::Write, tel_scope(&req.scope));
+        let call = Call::start(
+            SERVICE,
+            "SyncProjects",
+            Kind::Write,
+            tel_scope(&req.scope, request_id),
+        );
 
         call.run(
             async move { self.sync_as(caller.as_deref(), req).await },
@@ -214,8 +251,14 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<RenameProjectRequest>,
     ) -> Result<Response<RenameProjectResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
-        let call = Call::start(SERVICE, "RenameProject", Kind::Write, tel_scope(&req.scope));
+        let call = Call::start(
+            SERVICE,
+            "RenameProject",
+            Kind::Write,
+            tel_scope(&req.scope, request_id),
+        );
 
         call.run(
             async move { self.rename(req).await },
@@ -230,12 +273,13 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<ArchiveProjectRequest>,
     ) -> Result<Response<ArchiveProjectResponse>, Status> {
+        let request_id = request_id_of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
             "ArchiveProject",
             Kind::Write,
-            tel_scope(&req.scope),
+            tel_scope(&req.scope, request_id),
         );
 
         call.run(

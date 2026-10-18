@@ -1230,3 +1230,60 @@ fn pump(stream: impl Read, mut send: impl FnMut(String) -> bool) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// D67's request id on the record (ledger 1254).
+// ---------------------------------------------------------------------------
+
+/// The id `project` forwards as `x-yadgar-request-id`, minted by the gateway.
+/// A UUIDv7 nothing in this crate produces, and NOT the `r-1` [`World::scope`]
+/// carries, so a record holding it got it from the header.
+pub const FORWARDED_REQUEST_ID: &str = "01a0fdd8-2b87-704e-b0b6-77e1c0ffee42";
+
+/// Captures every `CallRecord` line `yadgar_telemetry::record::emit` writes,
+/// for as long as the guard `record::set_sink` hands back lives.
+#[derive(Clone, Default)]
+pub struct RecordCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl yadgar_telemetry::record::Sink for RecordCapture {
+    fn write_record(&self, line: &str) -> std::io::Result<()> {
+        self.0.lock().expect("the capture").push(line.to_string());
+        Ok(())
+    }
+}
+
+/// `message` with `x-yadgar-request-id: id`, as `project` forwards it.
+pub fn with_request_id<T>(message: T, id: &str) -> Request<T> {
+    let mut req = Request::new(message);
+    req.metadata_mut()
+        .insert("x-yadgar-request-id", id.parse().expect("an ASCII id"));
+    req
+}
+
+/// The one `CallRecord` line `run` emitted.
+///
+/// The sink is THREAD-scoped, and `#[tokio::test]` runs the handler on the
+/// test's own thread, so the record lands here rather than on stdout.
+pub async fn the_call_record<F: std::future::Future>(run: F) -> String {
+    let records = RecordCapture::default();
+    {
+        let _sink = yadgar_telemetry::record::set_sink(std::sync::Arc::new(records.clone()));
+        let _ = run.await;
+    }
+    let lines = records.0.lock().expect("the capture").clone();
+    assert_eq!(lines.len(), 1, "exactly one CallRecord: {lines:?}");
+    lines[0].clone()
+}
+
+/// Whether a `CallRecord` line carries exactly `id` as its `request_id`.
+pub fn carries(record: &str, id: &str) -> bool {
+    record.contains(&format!(r#""request_id":"{id}""#))
+}
+
+/// The `Scope` `project` sends on `ListProjects` and `ResolveProject`: present,
+/// because [`yadgar_project_db::sql::scope_of`] refuses an absent one, and
+/// EMPTY, because `project` holds nothing to attest — its request id travels in
+/// the header instead (ledger 762, 1254).
+pub fn the_tiers_placeholder_scope() -> Option<Scope> {
+    Some(Scope::default())
+}
