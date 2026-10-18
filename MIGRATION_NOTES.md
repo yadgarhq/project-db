@@ -83,16 +83,45 @@ v0.2.0 or later every clause is a no-op.
 
 **One case stops the boot, on purpose.** If the `project` table holds v0.1.x
 rows, those rows have no repository and no owner. Migration 6 then fails with
-error 4025 naming `ck_project_class`, and the pods do not start. kind-yadgar
-held 0 rows on 2026-10-18, so this case does not apply there. Elsewhere, count
-first:
+error 4025 naming `ck_project_class`, and the pods do not start. A boot that
+fails with 4025 naming `ck_project_class` means: follow this section.
+kind-yadgar held 0 rows on 2026-10-18, so this case does not apply there.
+
+**Before deploying v0.7.1**, count the rows. Every row in a v0.1.x store has no
+class, so count all of them. Do not name the class columns here: they do not
+exist yet, and a query that names them fails with 1054.
 
 ```
-SELECT COUNT(*) FROM project WHERE source_repo IS NULL AND owner_user_id IS NULL;
+SELECT COUNT(*) FROM project;
 ```
 
-A non-zero count is a decision for the operator: set `source_repo` (org rows) or
-`owner_user_id` (`local/...` rows) on each, or delete them. Then restart the pods.
+Zero: deploy, nothing else to do. Non-zero: the boot will be refused. The
+operator decides, per row, whether to classify it or delete it.
+
+**After a refused boot**, migration 6's first `ALTER` has already added the
+three columns, and every existing row holds `visibility = 0`. The CHECKs are
+not added yet. List the unclassed rows:
+
+```
+SELECT id, path FROM project WHERE source_repo IS NULL AND owner_user_id IS NULL;
+```
+
+Classify each row. Set `visibility` in the same statement, because 0 is the
+value the contract says is never stored. The values are the ones the code
+writes: `Visibility::Org` = 3 (`src/write/sync.rs`) for an org row, and
+`Visibility::Private` = 1 (`src/write/register.rs`) for a `local/...` row.
+
+```
+-- an org row: name the repository whose PR flow governs it
+UPDATE project SET source_repo = '<owner/repo>', visibility = 3 WHERE id = '<id>';
+-- a local/<account>/... row: name its owner
+UPDATE project SET owner_user_id = '<account>', visibility = 1 WHERE id = '<id>';
+-- or remove the row
+DELETE FROM project WHERE id = '<id>';
+```
+
+Then restart the pods. Migration 6 runs again, adds the CHECKs, and the store
+logs "schema at migration 6".
 
 ## Migration 1 was CUT FRESH: every existing `project-db` database must be dropped (ledger 881)
 
