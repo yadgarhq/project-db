@@ -64,6 +64,36 @@ or `yadgarhq/estate` may be a better home for machine-prerequisite notes that
 apply across every clone in the estate — the orchestrator's call, not this
 pull request's.
 
+## Migration 6 replaces the drop below: a v0.1.x store upgrades in place (v0.7.1)
+
+**THE SECTION AFTER THIS ONE IS SUPERSEDED. Do not drop a `project-db`
+database to recover the class columns.** Migration 6 (`project_class_columns`,
+`src/schema.rs`) adds `source_repo`, `owner_user_id`, `visibility` and the two
+class CHECKs to any `project` table that lacks them. On a store created by
+v0.2.0 or later every clause is a no-op.
+
+**Why.** kind-yadgar's database was migrated by v0.1.x and never dropped. On
+2026-10-18 project-db v0.7.0 logged "schema at migration 5", and every
+`SyncProjects` from the seeder failed with
+`1054 Unknown column 'source_repo' in 'SELECT'` (`INTERNAL: storage error`).
+`ResolveProject` and `RegisterProject` fail the same way on that store.
+
+**Nothing to run.** Deploy v0.7.1. The pods apply migration 6 at boot and log
+"schema at migration 6". The next seeder run then succeeds.
+
+**One case stops the boot, on purpose.** If the `project` table holds v0.1.x
+rows, those rows have no repository and no owner. Migration 6 then fails with
+error 4025 naming `ck_project_class`, and the pods do not start. kind-yadgar
+held 0 rows on 2026-10-18, so this case does not apply there. Elsewhere, count
+first:
+
+```
+SELECT COUNT(*) FROM project WHERE source_repo IS NULL AND owner_user_id IS NULL;
+```
+
+A non-zero count is a decision for the operator: set `source_repo` (org rows) or
+`owner_user_id` (`local/...` rows) on each, or delete them. Then restart the pods.
+
 ## Migration 1 was CUT FRESH: every existing `project-db` database must be dropped (ledger 881)
 
 **THIS MODULE IS DEPLOYED, AND THE CLAIM THAT IT IS NOT IS STALE.**

@@ -23,6 +23,7 @@ fn all() -> Vec<Migration> {
         project_write_idempotency(),
         pin_the_path_collation(),
         project_sync_lock(),
+        project_class_columns(),
     ]
 }
 
@@ -416,6 +417,58 @@ fn project_sync_lock() -> Migration {
                   CONSTRAINT ck_project_sync_lock_one CHECK (id = 1)
               ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
               INSERT IGNORE INTO project_sync_lock (id) VALUES (1)"
+            .into(),
+    }
+}
+
+/// **THE CLASS COLUMNS, FOR EVERY STORE THAT APPLIED MIGRATION 1 BEFORE #33
+/// EDITED IT.** #33 (v0.2.0) cut `source_repo`, `owner_user_id`, `visibility`
+/// and the two class CHECKs into `create_project` in place, on the licence that
+/// migration's header records, and `MIGRATION_NOTES.md` told the operator to
+/// drop every database v0.1.x had migrated. kind-yadgar's was never dropped. Its
+/// ledger read 1–4, so it never received the columns; v0.7.0 added migration 5
+/// on top and the store reported "schema at migration 5" while every
+/// `SyncProjects`, `ResolveProject` and `RegisterProject` died on
+/// `1054 Unknown column 'source_repo'` (2026-10-18). This migration replaces
+/// the drop as the recovery, and is the reason that licence is not spent again.
+///
+/// **EVERY CLAUSE IS GUARDED, BECAUSE ON A FRESH INSTALL ALL OF IT HAS ALREADY
+/// HAPPENED.** A store created by v0.2.0 or later got these columns and CHECKs
+/// from migration 1, so here `IF NOT EXISTS` makes each clause a no-op. The
+/// same guard makes a re-run after a partial failure safe: DDL is not
+/// transactional on this engine, so a failure between statements leaves the
+/// ledger row unwritten and the next boot runs all of it again.
+///
+/// **`AFTER` PUTS EACH COLUMN WHERE MIGRATION 1 PUTS IT**, so an upgraded store
+/// and a fresh one are the same schema down to ordinal position.
+/// `tests/upgrade.rs` compares the two through `information_schema` — columns,
+/// CHECKs and indexes — and that comparison is what proves nothing else
+/// diverged: these three columns and two CHECKs are the whole of the drift.
+///
+/// **A STORE THAT HOLDS v0.1.x ROWS IS REFUSED, AND THAT IS CORRECT.** Such a
+/// row has neither a repository nor an owner, nothing can derive either, and
+/// `ck_project_class` requires exactly one. `visibility` is `NOT NULL` with no
+/// default, so the engine fills existing rows with 0 — the value the contract
+/// says is never persisted — and the CHECK then refuses the whole statement,
+/// error 4025 naming `ck_project_class`. The columns are added by then; the
+/// constraint is not, and the ledger does not record this migration, so the
+/// store boots no further until an operator classifies or deletes those rows.
+/// That is the same answer migration 4 gives to two rows it cannot fold: loud,
+/// named, and never a guess written into a row.
+fn project_class_columns() -> Migration {
+    Migration {
+        version: 6,
+        name: "project_class_columns".into(),
+        sql: "ALTER TABLE project
+                ADD COLUMN IF NOT EXISTS source_repo   VARCHAR(255) NULL AFTER status,
+                ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(64)  NULL AFTER source_repo,
+                ADD COLUMN IF NOT EXISTS visibility    TINYINT  NOT NULL AFTER owner_user_id;
+              ALTER TABLE project
+                ADD CONSTRAINT IF NOT EXISTS ck_project_class
+                  CHECK ((source_repo IS NOT NULL) <> (owner_user_id IS NOT NULL));
+              ALTER TABLE project
+                ADD CONSTRAINT IF NOT EXISTS ck_project_class_path
+                  CHECK ((owner_user_id IS NOT NULL) = (path LIKE 'local/%'))"
             .into(),
     }
 }
