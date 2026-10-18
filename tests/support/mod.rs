@@ -112,6 +112,34 @@ pub struct World {
 
 impl World {
     pub async fn fresh(name: &str) -> Self {
+        Self::upgraded(name, Vec::new()).await
+    }
+
+    /// A database that first applied `history` — the migrations an OLDER
+    /// release shipped, frozen as that release had them — and then this
+    /// release's set on top, exactly as a deployed store meets a new image.
+    /// An empty `history` is [`World::fresh`].
+    ///
+    /// The ledger records versions only, so a history whose version 1 differs
+    /// from today's version 1 leaves the table as the history built it. That is
+    /// the state `tests/upgrade.rs` exists to cover.
+    pub async fn upgraded(name: &str, history: Vec<yadgar_store::migrate::Migration>) -> Self {
+        let pool = Self::history_only(name, history).await;
+        Self::apply(&pool, &schema::migrations().expect("set"))
+            .await
+            .expect("migrate");
+        Self {
+            db: ProjectDb::new(pool.clone()),
+            pool,
+        }
+    }
+
+    /// An empty database `name` with `history` applied and NOTHING of this
+    /// release's set — the store as an older image left it.
+    pub async fn history_only(
+        name: &str,
+        history: Vec<yadgar_store::migrate::Migration>,
+    ) -> MySqlPool {
         let mut root = sqlx::MySqlConnection::connect(&dsn())
             .await
             .expect("connect");
@@ -131,16 +159,22 @@ impl World {
             .connect(&format!("{}/{name}", base()))
             .await
             .expect("pool");
-        // The wait a chart would render. Stated in the TEST because
-        // `yadgar-store` has no default for it any more (ADR-0569, ledger 814).
-        let lock = yadgar_store::migrate::LockOptions::new(60).expect("60 seconds is a wait");
-        yadgar_store::migrate::apply(&pool, &schema::migrations().expect("set"), &lock)
-            .await
-            .expect("migrate");
-        Self {
-            db: ProjectDb::new(pool.clone()),
-            pool,
+        if !history.is_empty() {
+            let set = yadgar_store::migrate::MigrationSet::new(history).expect("history set");
+            Self::apply(&pool, &set).await.expect("migrate the history");
         }
+        pool
+    }
+
+    /// Apply one migration set under the wait a chart would render. Stated in
+    /// the TEST because `yadgar-store` has no default for it any more
+    /// (ADR-0569, ledger 814).
+    pub async fn apply(
+        pool: &MySqlPool,
+        set: &yadgar_store::migrate::MigrationSet,
+    ) -> Result<u64, yadgar_store::migrate::MigrationError> {
+        let lock = yadgar_store::migrate::LockOptions::new(60).expect("60 seconds is a wait");
+        yadgar_store::migrate::apply(pool, set, &lock).await
     }
 
     /// A scope stating everything a `Scope` carries.
