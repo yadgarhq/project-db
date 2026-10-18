@@ -18,10 +18,13 @@
 //!
 //! The contract says the same thing from the other side. `ListProjects` carries
 //! its OWN subtree parameter, `under_path`; if `Scope.project_id` were the
-//! subtree filter, that field would be redundant on the one rpc that has it. And
-//! `Project` carries no `visibility`, no `team_id` and no owner — the three
-//! fields D12's ladder is built from — so there is nothing on the entity for a
-//! per-row decision to be made against.
+//! subtree filter, that field would be redundant on the one rpc that has it.
+//! `Project` does carry an owner since migration 6: `Meta.owner_user_id` is the
+//! registrant of a private (`local/...`) row and empty on an org row. That owner
+//! is enforced at the GATEWAY (`plans/project-membership.md`, ADR-0947), on the
+//! calls made INTO a project, not here on who may read the registry. This store
+//! makes no per-row decision against it, and still reports no `team_id` and no
+//! `visibility`.
 //!
 //! **SO THE REGISTRY IS READABLE DEPLOYMENT-WIDE, AND THAT IS STATED RATHER THAN
 //! LEFT TO BE INFERRED FROM CODE THAT HAPPENS NOT TO FILTER.** One deployment is

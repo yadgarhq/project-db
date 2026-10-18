@@ -33,7 +33,8 @@ use crate::sql::internal;
 ///
 /// The aliases end in `_secs` so that a reader of [`row_to_project`] can see at
 /// the call site that the value is an epoch second and not a timestamp type.
-pub const COLUMNS: &str = "id, version, path, display_name, status, created_by, updated_by, \
+pub const COLUMNS: &str = "id, version, path, display_name, status, owner_user_id, \
+     created_by, updated_by, \
      CAST(UNIX_TIMESTAMP(created_at)   AS SIGNED) AS created_at_secs, \
      CAST(UNIX_TIMESTAMP(updated_at)   AS SIGNED) AS updated_at_secs, \
      CAST(UNIX_TIMESTAMP(last_seen_at) AS SIGNED) AS last_seen_at_secs";
@@ -56,15 +57,18 @@ pub fn at(seconds: i64) -> Timestamp {
 /// error somebody has to answer, which is the only moment the question gets
 /// asked.
 ///
-/// **`owner_user_id` IS DELIBERATELY EMPTY, AND SO ARE `team_id` AND
-/// `visibility`.** D12's ladder is about who may see a RECORD, and a project is
-/// not a record in a project — it is the partition key itself. `Project` carries
-/// no visibility field, which is the contract saying the registry is not
-/// access-controlled row by row (see [`crate::service`]). Writing the registrant
-/// into `owner_user_id` would invent an owner nothing enforces, and ADR-0512 is
-/// this estate's recorded cost of a field that reads as an identity and is not
-/// one. `created_by` already carries who registered it, which is the true
-/// statement.
+/// **`owner_user_id` IS THE STORED OWNER: the registrant on a PRIVATE row,
+/// empty on an ORG row.** Migration 6 gave `project` an `owner_user_id` column,
+/// and `ck_project_class_path` keeps it non-NULL exactly on `local/...` paths,
+/// so a NULL (every org row) reads as `""`. The gateway enforces it:
+/// `plans/project-membership.md` (ledger 1548, ADR-0947) admits only this owner
+/// to a private project, and the owner reaches the gateway through
+/// `ListProjects`. It is not `created_by` for that reason — `created_by` is
+/// audit identity (D12), and only `owner_user_id` is the one the check reads.
+///
+/// **`team_id` AND `visibility` STAY EMPTY.** The table has no team column, and
+/// the class is the PATH, not the stored `visibility`: reporting both would be
+/// two facts for one decision (the ADR-0569 drift shape).
 ///
 /// `aliases` is EMPTY here and filled by the caller. A project's aliases live in
 /// another table, so they are fetched per page rather than per row — see
@@ -81,7 +85,10 @@ pub fn row_to_project(row: &sqlx::mysql::MySqlRow) -> Result<Project, Status> {
             // is "which project does this record belong to", and the answer for
             // a project is itself.
             project_id: row.try_get("path").map_err(internal)?,
-            owner_user_id: String::new(),
+            owner_user_id: row
+                .try_get::<Option<String>, _>("owner_user_id")
+                .map_err(internal)?
+                .unwrap_or_default(),
             team_id: String::new(),
             visibility: 0,
             created_by: row.try_get("created_by").map_err(internal)?,
