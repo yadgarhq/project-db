@@ -112,6 +112,34 @@ pub struct World {
 
 impl World {
     pub async fn fresh(name: &str) -> Self {
+        Self::upgraded(name, Vec::new()).await
+    }
+
+    /// A database that first applied `history` — the migrations an OLDER
+    /// release shipped, frozen as that release had them — and then this
+    /// release's set on top, exactly as a deployed store meets a new image.
+    /// An empty `history` is [`World::fresh`].
+    ///
+    /// The ledger records versions only, so a history whose version 1 differs
+    /// from today's version 1 leaves the table as the history built it. That is
+    /// the state `tests/upgrade.rs` exists to cover.
+    pub async fn upgraded(name: &str, history: Vec<yadgar_store::migrate::Migration>) -> Self {
+        let pool = Self::history_only(name, history).await;
+        Self::apply(&pool, &schema::migrations().expect("set"))
+            .await
+            .expect("migrate");
+        Self {
+            db: ProjectDb::new(pool.clone()),
+            pool,
+        }
+    }
+
+    /// An empty database `name` with `history` applied and NOTHING of this
+    /// release's set — the store as an older image left it.
+    pub async fn history_only(
+        name: &str,
+        history: Vec<yadgar_store::migrate::Migration>,
+    ) -> MySqlPool {
         let mut root = sqlx::MySqlConnection::connect(&dsn())
             .await
             .expect("connect");
@@ -131,16 +159,22 @@ impl World {
             .connect(&format!("{}/{name}", base()))
             .await
             .expect("pool");
-        // The wait a chart would render. Stated in the TEST because
-        // `yadgar-store` has no default for it any more (ADR-0569, ledger 814).
-        let lock = yadgar_store::migrate::LockOptions::new(60).expect("60 seconds is a wait");
-        yadgar_store::migrate::apply(&pool, &schema::migrations().expect("set"), &lock)
-            .await
-            .expect("migrate");
-        Self {
-            db: ProjectDb::new(pool.clone()),
-            pool,
+        if !history.is_empty() {
+            let set = yadgar_store::migrate::MigrationSet::new(history).expect("history set");
+            Self::apply(&pool, &set).await.expect("migrate the history");
         }
+        pool
+    }
+
+    /// Apply one migration set under the wait a chart would render. Stated in
+    /// the TEST because `yadgar-store` has no default for it any more
+    /// (ADR-0569, ledger 814).
+    pub async fn apply(
+        pool: &MySqlPool,
+        set: &yadgar_store::migrate::MigrationSet,
+    ) -> Result<u64, yadgar_store::migrate::MigrationError> {
+        let lock = yadgar_store::migrate::LockOptions::new(60).expect("60 seconds is a wait");
+        yadgar_store::migrate::apply(pool, set, &lock).await
     }
 
     /// A scope stating everything a `Scope` carries.
@@ -1195,4 +1229,61 @@ fn pump(stream: impl Read, mut send: impl FnMut(String) -> bool) {
             return;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// D67's request id on the record (ledger 1254).
+// ---------------------------------------------------------------------------
+
+/// The id `project` forwards as `x-yadgar-request-id`, minted by the gateway.
+/// A UUIDv7 nothing in this crate produces, and NOT the `r-1` [`World::scope`]
+/// carries, so a record holding it got it from the header.
+pub const FORWARDED_REQUEST_ID: &str = "01a0fdd8-2b87-704e-b0b6-77e1c0ffee42";
+
+/// Captures every `CallRecord` line `yadgar_telemetry::record::emit` writes,
+/// for as long as the guard `record::set_sink` hands back lives.
+#[derive(Clone, Default)]
+pub struct RecordCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl yadgar_telemetry::record::Sink for RecordCapture {
+    fn write_record(&self, line: &str) -> std::io::Result<()> {
+        self.0.lock().expect("the capture").push(line.to_string());
+        Ok(())
+    }
+}
+
+/// `message` with `x-yadgar-request-id: id`, as `project` forwards it.
+pub fn with_request_id<T>(message: T, id: &str) -> Request<T> {
+    let mut req = Request::new(message);
+    req.metadata_mut()
+        .insert("x-yadgar-request-id", id.parse().expect("an ASCII id"));
+    req
+}
+
+/// The one `CallRecord` line `run` emitted.
+///
+/// The sink is THREAD-scoped, and `#[tokio::test]` runs the handler on the
+/// test's own thread, so the record lands here rather than on stdout.
+pub async fn the_call_record<F: std::future::Future>(run: F) -> String {
+    let records = RecordCapture::default();
+    {
+        let _sink = yadgar_telemetry::record::set_sink(std::sync::Arc::new(records.clone()));
+        let _ = run.await;
+    }
+    let lines = records.0.lock().expect("the capture").clone();
+    assert_eq!(lines.len(), 1, "exactly one CallRecord: {lines:?}");
+    lines[0].clone()
+}
+
+/// Whether a `CallRecord` line carries exactly `id` as its `request_id`.
+pub fn carries(record: &str, id: &str) -> bool {
+    record.contains(&format!(r#""request_id":"{id}""#))
+}
+
+/// The `Scope` `project` sends on `ListProjects` and `ResolveProject`: present,
+/// because [`yadgar_project_db::sql::scope_of`] refuses an absent one, and
+/// EMPTY, because `project` holds nothing to attest — its request id travels in
+/// the header instead (ledger 762, 1254).
+pub fn the_tiers_placeholder_scope() -> Option<Scope> {
+    Some(Scope::default())
 }
