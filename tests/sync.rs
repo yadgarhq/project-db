@@ -188,7 +188,7 @@ async fn a_re_declared_archived_project_is_active_again() {
 #[tokio::test]
 async fn a_private_row_survives_every_sync_untouched() {
     let w = World::fresh("project_db_sync_private").await;
-    let private = "local/u1/okapi-notes";
+    let private = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/okapi-notes";
     w.try_register(private, "notes").await.expect("register");
     let read = || async {
         sqlx::query_as::<_, (i8, u64, String, Option<String>, Option<String>, String)>(
@@ -240,8 +240,8 @@ async fn an_invalid_declaration_writes_nothing_and_names_the_path() {
         (
             "a local/ project",
             vec![root()],
-            vec![project("local/u1/thing")],
-            "local/u1/thing".into(),
+            vec![project("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/thing")],
+            "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/thing".into(),
         ),
         (
             "the reserved root",
@@ -446,7 +446,7 @@ async fn register_refuses_an_org_path_and_still_registers_a_private_one() {
     assert!(err.message().contains("seeder"), "{}", err.message());
     assert_eq!(w.row_count(P1).await, 0);
 
-    w.try_register("local/u1/okapi", "")
+    w.try_register("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/okapi", "")
         .await
         .expect("a private path still registers");
 }
@@ -569,7 +569,9 @@ async fn the_flag_admits_a_mass_archive() {
 async fn archived_and_private_rows_are_outside_the_guard_s_arithmetic() {
     let w = World::fresh("project_db_sync_guard_denominator").await;
     for n in 0..6 {
-        w.try_register(&format!("local/u1/n{n}"), "").await.unwrap();
+        w.try_register(&format!("local/{U1_SEG}/n{n}"), "")
+            .await
+            .unwrap();
     }
     // Four active, then two archived: two active remain (root and P1).
     w.sync(&[root()], &three(), false).await.unwrap();

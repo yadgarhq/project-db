@@ -78,6 +78,15 @@ record, and rewriting it is a rename (D53).
 refuses an org-class path with `FAILED_PRECONDITION`, so the two writers are
 disjoint by `ck_project_class`. Nothing in the estate calls it yet.
 
+It registers a private path only under the **registrant's own account segment**
+(ADR-0954): `local/<account>/...`, where `<account>` is the attested
+`Scope.user_id` with `yadgar:user:` removed — the lowercase uuidv7. Any other
+`local/` path, including a case variant of the caller's own root, is refused
+`PERMISSION_DENIED`; a `user_id` that is not a canonical
+`yadgar:user:<lowercase uuidv7>` is refused `INVALID_ARGUMENT`. Both refusals
+come before the store is read, so the answer never depends on whether the path
+is registered.
+
 ## `RenameProject` and `ArchiveProject` answer `UNIMPLEMENTED`
 
 **Rename is held back on a data argument, not an effort one.** An alias keeps a

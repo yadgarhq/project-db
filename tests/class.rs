@@ -53,14 +53,14 @@ use yadgar_project_db::pb::yadgar::common::v1::Visibility;
 /// An org-class path under the fixture root. Not `local`-anything.
 const ORG: &str = "pangolin-7c21/class-org";
 /// A private-class path: `local/<account>/<path>` (ADR-0605).
-const PRIVATE: &str = "local/jaguar-4f80/thing";
+const PRIVATE: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/thing";
 /// The same private path in a spelling the collation must fold.
-const PRIVATE_SHOUTED: &str = "LOCAL/jaguar-4f80/thing";
+const PRIVATE_SHOUTED: &str = "LOCAL/0192f3a4-5b6c-7d8e-9f01-23456789abc1/thing";
 /// An uppercase private path under a DIFFERENT account.
 ///
 /// **IT CANNOT BE [`PRIVATE_SHOUTED`], and the reason is the property under test.**
-/// `path` collates `utf8mb4_general_ci`, so `LOCAL/jaguar-4f80/thing` and
-/// `local/jaguar-4f80/thing` are ONE key to `uq_project_path` — which is the fold
+/// `path` collates `utf8mb4_general_ci`, so `LOCAL/<U1_SEG>/thing` and
+/// `local/<U1_SEG>/thing` are ONE key to `uq_project_path` — which is the fold
 /// working. A test inserting both into one database meets `ERROR 1062` on the
 /// second, from the unique index rather than from any CHECK. So the accepting case
 /// uses a second account.
@@ -202,7 +202,10 @@ async fn a_legitimate_row_of_each_class_is_accepted() {
         .expect("a private project names its owner");
     w.insert_class_row(PRIVATE_SHOUTED_OTHER, None, Some(U2))
         .await
-        .expect("`LOCAL/...` IS the private class, in any spelling — registry.rs registers one");
+        .expect(
+            "`LOCAL/...` IS the private class in the store, in any spelling — though \
+             RegisterProject admits only the canonical `local/<account>/` (tests/account.rs)",
+        );
 
     // READ THE COLUMNS BACK. An insert that "succeeded" having silently stored
     // NULL in both would satisfy the line above and violate the constraint the

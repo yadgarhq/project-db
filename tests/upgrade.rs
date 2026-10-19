@@ -110,7 +110,7 @@ async fn a_store_v0_1_migrated_syncs_resolves_and_registers_after_the_upgrade() 
     let resolved = w.resolve(P1).await.expect("ResolveProject");
     assert_eq!(resolved.source_repo, "tapir-0e61/one-repo");
 
-    let private = format!("local/{U1}/scratch");
+    let private = format!("local/{U1_SEG}/scratch");
     w.try_register(&private, "scratch")
         .await
         .expect("RegisterProject, private class");

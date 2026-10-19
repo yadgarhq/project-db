@@ -10,9 +10,9 @@ use yadgar_project_db::pb::yadgar::project::v1::ProjectStatus;
 /// their parent. `RegisterProject` registers the private class only since
 /// `SyncProjects` became the org writer (ADR-0936), so its own tests are about
 /// paths it will register. The org writer's are in `tests/sync.rs`.
-const P: &str = "local/jaguar-4f80";
-const A: &str = "local/jaguar-4f80/alpha";
-const B: &str = "local/jaguar-4f80/bravo";
+const P: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1";
+const A: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/alpha";
+const B: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/bravo";
 
 async fn world(name: &str) -> World {
     World::fresh(name).await
@@ -87,8 +87,14 @@ async fn two_ascii_case_spellings_of_one_path_are_one_row_in_the_store() {
     let w = world("project_db_registry_case_folds").await;
     w.register(A).await;
 
+    // ONLY THE TAIL IS SHOUTED. `local/<account>/` must be spelled exactly for
+    // `RegisterProject` to reach the INSERT at all (ADR-0954, `tests/account.rs`),
+    // and the INSERT is where the index answers; the segments beneath the
+    // account are free to differ in case, and that is what this measures.
+    let shouted = format!("local/{U1_SEG}/ALPHA");
+    assert!(shouted.eq_ignore_ascii_case(A) && shouted != A);
     let err = w
-        .try_register(&A.to_ascii_uppercase(), "the same path, shouted")
+        .try_register(&shouted, "the same path, shouted")
         .await
         .expect_err("uq_project_path holds one slot for every ASCII-case spelling");
     assert_eq!(err.code(), tonic::Code::AlreadyExists);
@@ -303,7 +309,7 @@ async fn a_path_that_is_not_a_project_path_registers_nothing() {
 #[tokio::test]
 async fn a_deep_path_derived_from_a_full_directory_is_registrable() {
     let w = world("project_db_registry_deep").await;
-    let deep = format!("local/home/max/git/{ROOT}/alpha/services/forecast");
+    let deep = format!("local/{U1_SEG}/home/max/git/{ROOT}/alpha/services/forecast");
     w.try_register(&deep, "")
         .await
         .expect("a deep path is a path");
@@ -348,9 +354,12 @@ async fn the_reserved_private_class_root_is_not_registrable() {
     // AND THE CLASS THE SEGMENT PROTECTS IS UNTOUCHED. A guard that reserved the
     // PREFIX rather than the SEGMENT would pass every assertion above and delete
     // the private class outright, which is the mutant this arm exists to catch.
-    w.try_register("local/home/max/src/alpha", "")
-        .await
-        .expect("a project beneath the reserved segment IS the private class");
+    w.try_register(
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha",
+        "",
+    )
+    .await
+    .expect("a project beneath the reserved segment IS the private class");
     // `locals` IS AN ORGANISATION, so it is refused — but as an ORG path
     // (FAILED_PRECONDITION, ADR-0936), never as the reserved segment
     // (INVALID_ARGUMENT). The code is what tells a prefix from a segment.
@@ -404,10 +413,23 @@ async fn an_upper_case_spelling_of_the_reserved_root_is_refused_too() {
 
     // AND THE CLASS THE SEGMENT PROTECTS IS STILL UNTOUCHED IN THAT SPELLING.
     // A guard that folded case into a PREFIX match would pass every assertion
-    // above and delete the private class outright.
-    w.try_register("LOCAL/home/max/src/alpha", "")
+    // above and delete the private class outright — and would answer
+    // INVALID_ARGUMENT naming the reserved segment here. What this spelling
+    // meets instead is the ACCOUNT guard (ADR-0954): `RegisterProject` admits
+    // only the canonical `local/<account>/` spelling, so the shouted root is
+    // PERMISSION_DENIED as "not your private root", and the code is what tells
+    // the two guards apart. `tests/account.rs` owns that rule.
+    let err = w
+        .try_register(&format!("LOCAL/{U1_SEG}/home/max/src/alpha"), "")
         .await
-        .expect("a project beneath the reserved segment IS the private class, in any spelling");
+        .expect_err("RegisterProject admits only the canonical private spelling");
+    assert_eq!(
+        err.code(),
+        tonic::Code::PermissionDenied,
+        "the shouted root is the private class, refused by the account guard and not \
+         by the reserved-root guard: {}",
+        err.message()
+    );
     let err = w
         .try_register("LOCALS", "a different organisation entirely")
         .await

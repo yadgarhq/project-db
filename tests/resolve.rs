@@ -270,7 +270,7 @@ async fn a_private_path_never_resolves_up_into_a_squatted_reserved_root() {
     w.seed_project("local", "a-stranger").await;
 
     let err = w
-        .resolve("local/home/max/src/alpha")
+        .resolve("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha")
         .await
         .expect_err("the reserved segment is not an ancestor of anything, row or no row");
     assert_eq!(err.code(), tonic::Code::NotFound);
@@ -280,12 +280,16 @@ async fn a_private_path_never_resolves_up_into_a_squatted_reserved_root() {
     // the assertion above and break the private class outright; here the walk
     // still finds a real ancestor with the squatted row present, so what the
     // filter removed is one segment rather than the subtree.
-    w.register("local/home/max/src/alpha").await;
+    w.register("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha")
+        .await;
     let r = w
-        .resolve("local/home/max/src/alpha/svc")
+        .resolve("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha/svc")
         .await
         .expect("a registered private project is still an ancestor");
-    assert_eq!(r.resolved_path, "local/home/max/src/alpha");
+    assert_eq!(
+        r.resolved_path,
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha"
+    );
     assert!(!r.exact);
 }
 
@@ -301,7 +305,7 @@ async fn a_private_path_never_resolves_up_through_an_alias_at_the_reserved_root(
     w.seed_alias("local", &id).await;
 
     let err = w
-        .resolve("local/home/max/src/alpha")
+        .resolve("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha")
         .await
         .expect_err("a former path at the reserved segment is not an ancestor either");
     assert_eq!(err.code(), tonic::Code::NotFound);
@@ -346,7 +350,7 @@ async fn an_upper_case_private_path_never_resolves_up_into_a_squatted_reserved_r
     w.seed_project("local", "a-stranger").await;
 
     let err = w
-        .resolve("LOCAL/home/max/src/alpha")
+        .resolve("LOCAL/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha")
         .await
         .expect_err("the reserved segment is not an ancestor in any spelling, row or no row");
     assert_eq!(err.code(), tonic::Code::NotFound);
@@ -354,12 +358,16 @@ async fn an_upper_case_private_path_never_resolves_up_into_a_squatted_reserved_r
     // THE CONTROL. A filter that dropped the whole SUBTREE rather than the one
     // segment would satisfy the assertion above and break the private class; here
     // a real ancestor is still found with the squatted row present.
-    w.register("local/home/max/src/alpha").await;
+    w.register("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha")
+        .await;
     let r = w
-        .resolve("local/home/max/src/alpha/svc")
+        .resolve("local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha/svc")
         .await
         .expect("a registered private project is still an ancestor");
-    assert_eq!(r.resolved_path, "local/home/max/src/alpha");
+    assert_eq!(
+        r.resolved_path,
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/src/alpha"
+    );
     assert!(!r.exact);
 }
 
@@ -506,7 +514,7 @@ async fn a_descendant_resolves_to_the_ancestors_repository_and_never_to_its_own_
 #[tokio::test]
 async fn a_private_class_row_resolves_with_an_empty_repository_rather_than_a_sentinel() {
     let w = world("project_db_resolve_source_repo_private").await;
-    const PRIVATE: &str = "local/jaguar-4f80/thing";
+    const PRIVATE: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/thing";
     w.register(PRIVATE).await;
 
     let r = w.resolve(PRIVATE).await.expect(

@@ -18,7 +18,7 @@ use support::*;
 use yadgar_project_db::pb::yadgar::project::v1::Project;
 
 /// A private-class path: `local/<account>/<path>` (ADR-0605).
-const PRIVATE: &str = "local/okapi-5e12/notes";
+const PRIVATE: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc2/notes";
 
 fn owner(p: &Project) -> &str {
     p.meta.as_ref().expect("meta").owner_user_id.as_str()
