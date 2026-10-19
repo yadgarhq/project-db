@@ -30,9 +30,13 @@
 //! and the job that retags the records already carrying an old path does not
 //! exist — so either verb shipped today would leave those records readable and
 //! absent from every view of the project they belong to. `src/write.rs` carries
-//! the whole argument. `RegisterProject` is implemented and has no caller:
-//! organisation-level projects are defined by GitOps rather than created on
-//! demand (D43).
+//! the whole argument. Organisation-level projects are defined by GitOps rather
+//! than created on demand (D43): the D35 seeder writes them through
+//! `project`, which relays to this store's `SyncProjects` (ADR-0936).
+//! `RegisterProject` registers a private `local/<account>/...` path only, and
+//! only under the registrant's own segment: `scope.user_id` with
+//! `yadgar:user:` removed, which must be a canonical lowercase uuidv7
+//! (ADR-0954).
 //!
 //! **ADR-0227: an identity is never derived.** A caller supplies a path or the
 //! call is refused. Nothing here trims, lowercases, normalises or invents one,
