@@ -225,18 +225,18 @@ async fn an_under_path_that_is_not_a_project_path_is_refused() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
-/// The `ListProjects` half of the presence check `tests/resolve.rs`'s
-/// `an_absent_scope_is_refused` pins for `ResolveProject`.
+/// **AN ABSENT `Scope` IS ACCEPTED ON THIS READ (ledger 762, route (c)).** No
+/// `Scope` field filters, keys or partitions a row of `ListProjects` — the
+/// registry is readable deployment-wide (see `src/service.rs`) — and D67's id
+/// arrives as `x-yadgar-request-id` when there is no `Scope` to carry it. So
+/// `project`, which holds no `Scope` on this rpc, sends none.
+/// `tests/resolve.rs`'s `an_absent_scope_is_accepted` pins the `ResolveProject`
+/// half; `tests/scope.rs` pins that the WRITES still refuse one.
 ///
-/// **THIS IS A TRIPWIRE FOR ANOTHER REPOSITORY (ledger 762).** `project` sends a
-/// `Scope::default()` placeholder on this rpc only because this check refuses
-/// an absent one (`project/src/service.rs::unattested_placeholder_scope`), and
-/// `project`'s own tests of that placeholder run against a mock store, so they
-/// cannot fail when this check goes. **Flipping this test is route (c) of
-/// `plans/the-project-logic-tier.md` §6. The same PR train MUST delete
-/// `project/src/service.rs::unattested_placeholder_scope` and its two tests.**
+/// **THE MUTATION THAT REDS IT:** restore `scope_of(&req.scope)?` in
+/// `src/read.rs`'s `list`.
 #[tokio::test]
-async fn list_refuses_an_absent_scope() {
+async fn list_accepts_an_absent_scope() {
     let w = world("project_db_list_no_scope").await;
     w.register(A).await;
 
@@ -244,7 +244,7 @@ async fn list_refuses_an_absent_scope() {
     use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
     use yadgar_project_db::pb::yadgar::project::v1::ListProjectsRequest;
 
-    let err =
+    let listed =
         w.db.list_projects(Request::new(ListProjectsRequest {
             scope: None,
             under_path: String::new(),
@@ -253,13 +253,18 @@ async fn list_refuses_an_absent_scope() {
             page_token: String::new(),
         }))
         .await
-        .expect_err("an absent scope is refused before any row is read");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        .expect("an absent scope is accepted on a read")
+        .into_inner();
+    assert!(
+        listed.projects.iter().any(|p| p.path == A),
+        "the registered row is listed: {:?}",
+        listed.projects
+    );
 }
 
 /// **THE ID `project` FORWARDS IS THE ONE THIS HOP RECORDS (ledger 1254).**
-/// `project`'s `ListProjects` carries no `Scope`, so the one it sends here is an
-/// empty placeholder and the id arrives as `x-yadgar-request-id`.
+/// `project`'s `ListProjects` carries no `Scope`, so it sends none here and the
+/// id arrives as `x-yadgar-request-id`.
 ///
 /// **THE MUTATION THAT REDS IT:** drop the header read from `tel_scope`.
 #[tokio::test]
@@ -272,7 +277,7 @@ async fn list_records_the_forwarded_request_id_when_the_scope_carries_none() {
 
     let record = the_call_record(w.db.list_projects(with_request_id(
         ListProjectsRequest {
-            scope: the_tiers_placeholder_scope(),
+            scope: None,
             under_path: String::new(),
             status: None,
             page_size: 0,

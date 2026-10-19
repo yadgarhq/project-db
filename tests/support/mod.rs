@@ -1293,11 +1293,3 @@ pub async fn the_call_record<F: std::future::Future>(run: F) -> String {
 pub fn carries(record: &str, id: &str) -> bool {
     record.contains(&format!(r#""request_id":"{id}""#))
 }
-
-/// The `Scope` `project` sends on `ListProjects` and `ResolveProject`: present,
-/// because [`yadgar_project_db::sql::scope_of`] refuses an absent one, and
-/// EMPTY, because `project` holds nothing to attest — its request id travels in
-/// the header instead (ledger 762, 1254).
-pub fn the_tiers_placeholder_scope() -> Option<Scope> {
-    Some(Scope::default())
-}

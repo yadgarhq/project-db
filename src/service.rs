@@ -36,16 +36,20 @@
 //! that is ever wrong, it is wrong at the level of who may reach the service, and
 //! the change is a contract change rather than a predicate quietly added here.
 //!
-//! `Scope` is still REQUIRED on every rpc and refused when absent: it carries
-//! `request_id`, without which D67's records cannot be summed across hops, and
-//! `user_id` and `project_id`, which key D9's idempotency ledger. An absent one
-//! is a programming error upstream.
+//! **SO A READ ACCEPTS AN ABSENT `Scope`; A WRITE STILL REFUSES ONE (ledger
+//! 762, route (c) of `plans/the-project-logic-tier.md` §6).** `ResolveProject`,
+//! `GetProject` and `ListProjects` read no field of it. The writes keep the
+//! requirement: `RegisterProject` and `SyncProjects` stamp `user_id` as
+//! `created_by` and `updated_by`, `RegisterProject` keys D9's idempotency
+//! ledger by `user_id` and `project_id`, and `TouchProjects` is held to the
+//! same rule although it reads no field today — see
+//! [`crate::sql::scope_of`].
 //!
-//! **ONE CALLER'S `Scope` IS EMPTY, AND ITS `request_id` ARRIVES AS A HEADER.**
-//! `project`'s `ListProjects` and `ResolveProject` carry no `Scope`, so `project`
-//! sends an empty placeholder to pass the presence check and forwards D67's id
-//! as `x-yadgar-request-id` (ledger 1254). Every handler reads that header and
-//! [`crate::sql::tel_scope`] records it when the `Scope`'s own id is empty.
+//! **`request_id` ARRIVES AS A HEADER WHEN THERE IS NO `Scope` TO CARRY IT.**
+//! `project`'s `ListProjects` and `ResolveProject` carry no `Scope`, so
+//! `project` sends none and forwards D67's id as `x-yadgar-request-id`
+//! (ledger 1254). Every handler reads that header and
+//! [`crate::sql::tel_scope`] records it when no `Scope` carries an id.
 //!
 //! # This module is in ADR-0522's PRE-ENFORCEMENT state, deliberately
 //!

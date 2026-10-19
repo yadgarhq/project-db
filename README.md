@@ -174,9 +174,13 @@ organisation registered — not the content filed under them. A caller that can
 reach this service can list every project path in the installation. If that is
 ever wrong it is wrong at the level of who may reach the service.
 
-`Scope` is still required on every rpc and refused when absent: it carries
-`request_id`, without which D67's telemetry cannot be summed across hops, and
-`user_id` and `project_id`, which key D9's idempotency ledger.
+So the three reads — `ResolveProject`, `GetProject` and `ListProjects` —
+accept an absent `Scope` (ledger 762). The writes still require one and refuse
+it when absent: `RegisterProject` and `SyncProjects` stamp `user_id` as
+`created_by` and `updated_by`, and `user_id` and `project_id` key D9's
+idempotency ledger. D67's `request_id`
+arrives as the `x-yadgar-request-id` header when no `Scope` carries it, which is
+how `project` sends it on its two reads.
 
 ## The protos are vendored, not fetched
 
