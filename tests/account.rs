@@ -54,32 +54,75 @@ async fn a_foreign_account_segment_is_refused_and_nothing_is_written() {
 }
 
 /// **NO EXISTENCE ORACLE (ADR-0954).** The refusal for a foreign path must be
-/// the same whether or not that path is registered. A guard below the INSERT
-/// would answer `ALREADY_EXISTS` for a registered path and `PERMISSION_DENIED`
-/// for an unregistered one — telling a stranger which private paths exist.
+/// the same whether or not that path is registered — as a live path OR as a
+/// former path (an alias). Two store reads stand between the claim and the
+/// INSERT, and a guard below either leaks:
+///
+/// - below `alias_owner`, a foreign path held as an alias answers
+///   `ALREADY_EXISTS` and NAMES the owning project;
+/// - below the INSERT, a registered foreign path answers `ALREADY_EXISTS`
+///   from `uq_project_path`.
+///
+/// An unregistered one answers `PERMISSION_DENIED` either way, so the
+/// difference would tell a stranger which private paths exist. Both arms are
+/// asserted, because a guard moved to just after the claim and before
+/// `alias_owner` passes the live-path arm and fails only the alias one.
 #[tokio::test]
 async fn a_foreign_path_is_refused_identically_whether_or_not_it_is_registered() {
     let w = world("project_db_account_oracle").await;
     let theirs = format!("local/{U2_SEG}/notes");
+    let their_alias = format!("local/{U2_SEG}/x");
 
     let before = w
         .register_as(&theirs, "", U1, Some("k-1"))
         .await
         .expect_err("unregistered foreign path");
-    w.register_as(&theirs, "", U2, None)
+    let alias_before = w
+        .register_as(&their_alias, "", U1, Some("k-2"))
         .await
-        .expect("U2 registers its own path");
+        .expect_err("foreign path that is no alias yet");
+
+    let id = w
+        .register_as(&theirs, "", U2, None)
+        .await
+        .expect("U2 registers its own path")
+        .meta
+        .expect("meta")
+        .id;
+    // No served rpc writes `project_alias` in this release; the fixture does.
+    w.seed_alias(&their_alias, &id).await;
+
     let after = w
         .register_as(&theirs, "", U1, Some("k-1"))
         .await
         .expect_err("registered foreign path");
+    let alias_after = w
+        .register_as(&their_alias, "", U1, Some("k-2"))
+        .await
+        .expect_err("foreign path held as an alias");
 
-    assert_foreign(&before, "unregistered");
-    assert_foreign(&after, "registered");
+    for (err, what) in [
+        (&before, "unregistered"),
+        (&after, "registered"),
+        (&alias_before, "no alias yet"),
+        (&alias_after, "held as an alias"),
+    ] {
+        assert_foreign(err, what);
+    }
     assert_eq!(
         before.message(),
         after.message(),
         "the answer must not depend on whether the path exists"
+    );
+    assert_eq!(
+        alias_before.message(),
+        alias_after.message(),
+        "the answer must not depend on whether the path is a former path"
+    );
+    assert!(
+        !alias_after.message().contains(&id),
+        "the refusal must never name the project holding the alias: {}",
+        alias_after.message()
     );
     assert_eq!(w.project_count().await, 1, "only U2's own row exists");
 }

@@ -205,9 +205,9 @@ impl ProjectDb {
 /// makes: a request that cannot succeed should not take a connection out of the
 /// pool to be told so. For the `source_repo` refusal that is the whole reason:
 /// below `idem::claim` it would roll the claim back with the transaction
-/// anyway. **For the ACCOUNT guard the placement is correctness** — below the
-/// claim, a registered foreign path would answer differently from an
-/// unregistered one (ADR-0954); see the guard itself.
+/// anyway. **For the ACCOUNT guard the placement is correctness** — below
+/// `alias_owner` or the INSERT, a registered foreign path would answer
+/// differently from an unregistered one (ADR-0954); see the guard itself.
 struct Class {
     owner_user_id: String,
     visibility: i8,
@@ -237,12 +237,15 @@ impl Class {
         // renders `<seg>` — see `path::account_segment` for the rendering and
         // `path::is_under_own_root` for why only the canonical spelling passes.
         //
-        // **ABOVE `pool.begin()` IS LOAD-BEARING HERE, NOT ONLY CHEAPER.** Below
-        // the claim, a foreign path that is already registered would meet the
-        // replay arm or `uq_project_path`'s `ALREADY_EXISTS`, and an
-        // unregistered one this refusal — so a stranger could learn which
-        // private paths exist, the oracle ADR-0954 closes. Here the answer
-        // depends on the path and the caller alone, never on the store.
+        // **ABOVE `alias_owner` AND THE INSERT IS LOAD-BEARING, NOT ONLY
+        // CHEAPER.** Below either, a foreign path held as an alias would answer
+        // `ALREADY_EXISTS` naming its project, and a registered one
+        // `uq_project_path`'s `ALREADY_EXISTS`, while an unregistered one meets
+        // this refusal — so a stranger could learn which private paths exist,
+        // the oracle ADR-0954 closes. (The replay arm is not part of it: a
+        // replay is keyed on the caller's OWN user and key, so it discloses
+        // nothing about anyone else.) Here the answer depends on the path and
+        // the caller alone, never on the store.
         //
         // `INVALID_ARGUMENT` for a user id that owns no segment, the code
         // `SyncProjects` gives a missing one. `user_id` is the gateway's

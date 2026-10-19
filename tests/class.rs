@@ -202,7 +202,10 @@ async fn a_legitimate_row_of_each_class_is_accepted() {
         .expect("a private project names its owner");
     w.insert_class_row(PRIVATE_SHOUTED_OTHER, None, Some(U2))
         .await
-        .expect("`LOCAL/...` IS the private class, in any spelling — registry.rs registers one");
+        .expect(
+            "`LOCAL/...` IS the private class in the store, in any spelling — though \
+             RegisterProject admits only the canonical `local/<account>/` (tests/account.rs)",
+        );
 
     // READ THE COLUMNS BACK. An insert that "succeeded" having silently stored
     // NULL in both would satisfy the line above and violate the constraint the
