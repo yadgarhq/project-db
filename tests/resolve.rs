@@ -401,17 +401,18 @@ async fn the_bare_reserved_root_in_upper_case_is_refused_rather_than_emptying_th
     );
 }
 
-/// **THIS IS A TRIPWIRE FOR ANOTHER REPOSITORY (ledger 762).** `project` sends
-/// a `Scope::default()` placeholder on `ResolveProject` only because this check
-/// refuses an absent one (`project/src/service.rs::unattested_placeholder_scope`),
-/// and `project`'s own tests of that placeholder run against a mock store, so
-/// they cannot fail when this check goes. `tests/list.rs`'s
-/// `list_refuses_an_absent_scope` pins the `ListProjects` half. **Flipping this
-/// test is route (c) of `plans/the-project-logic-tier.md` §6. The same PR train
-/// MUST delete `project/src/service.rs::unattested_placeholder_scope` and its
-/// two tests.**
+/// **AN ABSENT `Scope` IS ACCEPTED ON THIS READ (ledger 762, route (c)).**
+/// Resolution cannot filter by `Scope` — `Scope.project_id` is derived from the
+/// candidate being resolved (see `src/service.rs`) — and D67's id arrives as
+/// `x-yadgar-request-id` when there is no `Scope` to carry it. So `project`,
+/// which holds no `Scope` on this rpc, sends none. `tests/list.rs`'s
+/// `list_accepts_an_absent_scope` pins the `ListProjects` half;
+/// `tests/scope.rs` pins that the WRITES still refuse one.
+///
+/// **THE MUTATION THAT REDS IT:** restore `scope_of(&req.scope)?` in
+/// `src/read.rs`'s `resolve`.
 #[tokio::test]
-async fn an_absent_scope_is_refused() {
+async fn an_absent_scope_is_accepted() {
     let w = world("project_db_resolve_no_scope").await;
     w.register(A).await;
 
@@ -419,14 +420,16 @@ async fn an_absent_scope_is_refused() {
     use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
     use yadgar_project_db::pb::yadgar::project::v1::ResolveProjectRequest;
 
-    let err =
+    let resolved =
         w.db.resolve_project(Request::new(ResolveProjectRequest {
             scope: None,
             candidate_path: A.into(),
         }))
         .await
-        .expect_err("scope is attested by the gateway and is never absent");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        .expect("an absent scope is accepted on a read")
+        .into_inner();
+    assert_eq!(resolved.resolved_path, A);
+    assert!(resolved.exact);
 }
 
 /// The repository that governs [`A`]'s namespace in the tests below.
@@ -607,9 +610,9 @@ async fn an_alias_matched_resolve_answers_with_the_live_rows_repository() {
 // ---------------------------------------------------------------------------
 
 /// **THE ID `project` FORWARDS IS THE ONE THIS HOP RECORDS.** `project`'s
-/// `ResolveProject` carries no `Scope` of its own, so the one it sends here is
-/// an empty placeholder and the id arrives as `x-yadgar-request-id`. Reading
-/// the `Scope` alone records `""`, and this hop joins to nothing.
+/// `ResolveProject` carries no `Scope` of its own, so it sends none here and
+/// the id arrives as `x-yadgar-request-id`. Reading the `Scope` alone records
+/// `""`, and this hop joins to nothing.
 ///
 /// **THE MUTATION THAT REDS IT:** drop the header read from `tel_scope`.
 #[tokio::test]
@@ -622,7 +625,7 @@ async fn resolve_records_the_forwarded_request_id_when_the_scope_carries_none() 
 
     let record = the_call_record(w.db.resolve_project(with_request_id(
         ResolveProjectRequest {
-            scope: the_tiers_placeholder_scope(),
+            scope: None,
             candidate_path: A.into(),
         },
         FORWARDED_REQUEST_ID,
@@ -671,7 +674,7 @@ async fn an_over_long_forwarded_request_id_is_capped_on_the_record() {
     let cut = format!("{}...", "z".repeat(256));
     let record = the_call_record(w.db.resolve_project(with_request_id(
         ResolveProjectRequest {
-            scope: the_tiers_placeholder_scope(),
+            scope: None,
             candidate_path: A.into(),
         },
         &long,
@@ -681,7 +684,7 @@ async fn an_over_long_forwarded_request_id_is_capped_on_the_record() {
 
     let again = the_call_record(w.db.resolve_project(with_request_id(
         ResolveProjectRequest {
-            scope: the_tiers_placeholder_scope(),
+            scope: None,
             candidate_path: A.into(),
         },
         &cut,

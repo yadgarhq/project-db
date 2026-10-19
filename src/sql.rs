@@ -5,29 +5,25 @@ use tonic::Status;
 
 use crate::pb::yadgar::common::v1::Scope;
 
+/// The `Scope` a WRITE requires: `RegisterProject` and `TouchProjects` call
+/// this. (`SyncProjects` has its own check, whose message fits its caller.)
+///
 /// The gateway attests scope from credentials; it is never supplied by the
-/// caller (D12). An absent scope is a programming error upstream, not a
-/// permissive default — so it is refused rather than treated as "everything".
+/// caller (D12). An absent scope on a write is a programming error upstream,
+/// not a permissive default — so it is refused rather than treated as
+/// "everything". `RegisterProject` stamps `created_by` and `updated_by` from
+/// `Scope.user_id` and keys D9's idempotency ledger by it. `TouchProjects`
+/// reads no field of it today and keeps the requirement anyway: ledger 762
+/// relaxed the reads only.
 ///
-/// **IT IS REQUIRED HERE EVEN THOUGH IT FILTERS NO ROW, and that is a decision
-/// rather than an oversight — see the module documentation on
-/// [`crate::service`] for the whole of the argument.** `Scope` is what carries
-/// `request_id` and `user_id`, so D67's records join across hops through it and
-/// D9's idempotency ledger is keyed by it. A handler that tolerated its absence
-/// would emit unjoinable telemetry and deduplicate every keyless caller into one
-/// slot. (`project`'s two read calls are the exception on the telemetry half:
-/// their `Scope` is an empty placeholder, and the id comes from the header — see
-/// [`tel_scope`].)
-///
-/// **THIS CHECK IS A TRIPWIRE FOR ANOTHER REPOSITORY (ledger 762).** `project`
-/// sends a `Scope::default()` placeholder on `ListProjects` and `ResolveProject`
-/// only because this refuses an absent one
-/// (`project/src/service.rs::unattested_placeholder_scope`), and the message
-/// below — "attested by the gateway" — is false for that caller. Pinned by
-/// `tests/resolve.rs`'s `an_absent_scope_is_refused` and `tests/list.rs`'s
-/// `list_refuses_an_absent_scope`. **Flipping those tests is route (c) of
-/// `plans/the-project-logic-tier.md` §6. The same PR train MUST delete
-/// `project/src/service.rs::unattested_placeholder_scope` and its two tests.**
+/// **THE THREE READS DO NOT CALL THIS (ledger 762, route (c) of
+/// `plans/the-project-logic-tier.md` §6).** `ResolveProject`, `GetProject` and
+/// `ListProjects` accept an absent `Scope`, because no read filters, keys or
+/// partitions on one — see the module documentation on [`crate::service`] —
+/// and D67's id has a header fallback in [`tel_scope`]. `project` holds no
+/// `Scope` on `ListProjects` or `ResolveProject` and sends none. Pinned by
+/// `tests/list.rs`'s `list_accepts_an_absent_scope`, `tests/resolve.rs`'s
+/// `an_absent_scope_is_accepted` and `tests/scope.rs`.
 pub fn scope_of(scope: &Option<Scope>) -> Result<&Scope, Status> {
     scope
         .as_ref()
@@ -36,14 +32,15 @@ pub fn scope_of(scope: &Option<Scope>) -> Result<&Scope, Status> {
 
 /// Copy the scope fields a record needs, before the request is consumed.
 ///
-/// Empty strings when the scope is absent: the call is refused on its own merits,
-/// and telemetry must never be the thing that fails a request (D25).
+/// Empty strings when the scope is absent: a write is refused on its own
+/// merits, a read proceeds, and telemetry must never be the thing that fails a
+/// request (D25).
 ///
 /// **`request_id` FALLS BACK TO THE HEADER WHEN THE `Scope` CARRIES NONE**
 /// (ledger 1254). `header` is [`request_id_of`]'s read of
 /// `x-yadgar-request-id`. `project`'s `ListProjects` and `ResolveProject` carry
-/// no `Scope`, so the one `project` sends here is an empty placeholder and
-/// D67's id arrives in the header instead — the shape `iam` → `iam-db` already
+/// no `Scope`, so `project` sends none here and D67's id arrives in the header
+/// instead — the shape `iam` → `iam-db` already
 /// uses. An id the `Scope` does carry wins: it was attested by the gateway, the
 /// stronger claim, and `project` resolves the two in the same order.
 pub fn tel_scope(scope: &Option<Scope>, header: String) -> yadgar_telemetry::observe::Scope {

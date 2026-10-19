@@ -6,7 +6,7 @@ use crate::path;
 use crate::pb::yadgar::project::v1::*;
 use crate::rows::{row_to_project, COLUMNS};
 use crate::service::ProjectDb;
-use crate::sql::{holes, internal, scope_of, subtree, ESCAPE};
+use crate::sql::{holes, internal, subtree, ESCAPE};
 
 /// D56 bounds reads: an unbounded page is how one caller takes the whole table.
 ///
@@ -44,7 +44,6 @@ impl ProjectDb {
         &self,
         req: ResolveProjectRequest,
     ) -> Result<ResolveProjectResponse, Status> {
-        let _scope = scope_of(&req.scope)?;
         path::validate("candidate_path", &req.candidate_path)?;
         // BEFORE `ancestors`, NOT AFTER, and the ordering is load-bearing rather
         // than tidy. The reserved segment is dropped from the chain below, so a
@@ -174,7 +173,6 @@ impl ProjectDb {
     /// The response carries the canonical `path` and every alias, so a caller
     /// that arrived by an old path can see which one it reached.
     pub(crate) async fn get(&self, req: GetProjectRequest) -> Result<GetProjectResponse, Status> {
-        let _scope = scope_of(&req.scope)?;
         path::validate("path", &req.path)?;
 
         // AUDIT: the interpolation is this module's own column list; every
@@ -210,7 +208,6 @@ impl ProjectDb {
         &self,
         req: ListProjectsRequest,
     ) -> Result<ListProjectsResponse, Status> {
-        let _scope = scope_of(&req.scope)?;
         let limit = page_size(req.page_size);
         let status = status_filter(req.status)?;
 
