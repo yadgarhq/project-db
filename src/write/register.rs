@@ -109,7 +109,7 @@ impl ProjectDb {
             )));
         }
 
-        // ABOVE THE TRANSACTION, on the cost argument — see [`Class`].
+        // ABOVE THE TRANSACTION, on the cost and no-oracle arguments — see [`Class`].
         let class = Class::of(&req.path, &scope.user_id, &req.source_repo)?;
 
         let mut tx = self.pool.begin().await.map_err(internal)?;
@@ -203,8 +203,11 @@ impl ProjectDb {
 ///
 /// Called ABOVE `pool.begin()`, on the cost argument `path::refuse_reserved_root`
 /// makes: a request that cannot succeed should not take a connection out of the
-/// pool to be told so. A refusal below `idem::claim` would roll the claim back
-/// with the transaction anyway, so this placement is cost, not correctness.
+/// pool to be told so. For the `source_repo` refusal that is the whole reason:
+/// below `idem::claim` it would roll the claim back with the transaction
+/// anyway. **For the ACCOUNT guard the placement is correctness** — below the
+/// claim, a registered foreign path would answer differently from an
+/// unregistered one (ADR-0954); see the guard itself.
 struct Class {
     owner_user_id: String,
     visibility: i8,
@@ -229,6 +232,39 @@ impl Class {
                  RegisterProject registers a private `local/<account>/...` project only"
             )));
         }
+        // THE ACCOUNT GUARD (ADR-0605's rule, ADR-0954's rendering; ledger 641).
+        // A `local/<seg>/...` path registers only for the caller whose user id
+        // renders `<seg>` — see `path::account_segment` for the rendering and
+        // `path::is_under_own_root` for why only the canonical spelling passes.
+        //
+        // **ABOVE `pool.begin()` IS LOAD-BEARING HERE, NOT ONLY CHEAPER.** Below
+        // the claim, a foreign path that is already registered would meet the
+        // replay arm or `uq_project_path`'s `ALREADY_EXISTS`, and an
+        // unregistered one this refusal — so a stranger could learn which
+        // private paths exist, the oracle ADR-0954 closes. Here the answer
+        // depends on the path and the caller alone, never on the store.
+        //
+        // `INVALID_ARGUMENT` for a user id that owns no segment, the code
+        // `SyncProjects` gives a missing one. `user_id` is the gateway's
+        // attestation and unbounded, so it is named and never echoed.
+        let Some(seg) = crate::path::account_segment(actor) else {
+            return Err(Status::invalid_argument(
+                "scope.user_id is not a canonical `yadgar:user:<lowercase uuidv7>` id, so it owns \
+                 no account segment and can register no private `local/<account>/...` path \
+                 (ADR-0954)",
+            ));
+        };
+        // `PERMISSION_DENIED`, the code `SyncProjects` gives the wrong
+        // principal: the path is well-formed, and what refuses it is whose it
+        // is. The message names the CALLER'S OWN segment and the path the
+        // caller sent, and nothing the store holds.
+        if !crate::path::is_under_own_root(path, seg) {
+            return Err(Status::permission_denied(format!(
+                "{path:?} is not under your private root \"local/{seg}\". A private project id \
+                 is `local/<account>/...`, where <account> is your user id without its \
+                 `yadgar:user:` prefix, spelled exactly in lowercase (ADR-0954)"
+            )));
+        }
         if !source_repo.is_empty() {
             return Err(Status::invalid_argument(format!(
                 "source_repo was sent as {source_repo:?} for the private-class path \
@@ -238,15 +274,10 @@ impl Class {
             )));
         }
         Ok(Self {
-            // THE CALLER, and the ACCOUNT SEGMENT IS NOT CHECKED AGAINST IT
-            // HERE. ADR-0605 requires that a `local/<account>/…` registration
-            // carry the caller's own account, and assigns the check to ledger
-            // 641's composition point rather than to this module: the account
-            // RENDERING is an open choice there, and `project-db` cannot map a
-            // `user_id` onto a path segment without it. `scope.user_id` is the
-            // gateway-resolved identity (never self-asserted), so the owner
-            // recorded here is right; what is not yet enforced is that it
-            // matches the segment.
+            // THE CALLER, and by now the path's account segment IS the caller's:
+            // the account guard above refused every other path (ADR-0954). So
+            // the owner column and the path agree by construction, and the
+            // gateway may read ownership off either.
             owner_user_id: actor.to_string(),
             // D12's default for the private class.
             visibility: Visibility::Private as i8,

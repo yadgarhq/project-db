@@ -86,7 +86,7 @@ pub const RESERVED_ROOT: &str = "local";
 ///
 /// **`local/<anything>` STAYS REGISTRABLE, and that is the whole precision of
 /// this check.** The reservation is about the ORGANISATION SEGMENT, not about
-/// the prefix: `local/home/max/git/alpha` IS the private class, and refusing it
+/// the prefix: `local/<account>/home/max/git/alpha` IS the private class, and refusing it
 /// would delete the class the segment is reserved to carry. The comparison is
 /// equality rather than `starts_with` for the same reason [`ancestors`] splits
 /// on `/`: `locals` is a different organisation that merely shares five
@@ -152,7 +152,8 @@ pub fn refuse_reserved_root(what: &'static str, path: &str) -> Result<(), Status
              not a repository is registered beneath it — so a project owning it would be the \
              nearest registered ancestor of every private path in the estate, and every one of \
              them would resolve into it (D52, D53). Name the project itself, such as \
-             \"{RESERVED_ROOT}/home/you/src/thing\", or an organisation of your own"
+             \"{RESERVED_ROOT}/<your-account-uuid>/home/you/src/thing\" (ADR-0954), or an \
+             organisation of your own"
         )));
     }
     Ok(())
@@ -182,6 +183,53 @@ pub fn refuse_reserved_root(what: &'static str, path: &str) -> Result<(), Status
 pub fn is_private_class(path: &str) -> bool {
     path.split_once('/')
         .is_some_and(|(root, _)| root.eq_ignore_ascii_case(RESERVED_ROOT))
+}
+
+/// The prefix of every user id `iam-db` mints: `yadgar:user:<uuidv7>`.
+pub const USER_ID_PREFIX: &str = "yadgar:user:";
+
+/// The ACCOUNT SEGMENT *user_id* owns in the private class, or `None` when it
+/// owns none (ADR-0954).
+///
+/// **THE RENDERING IS ADR-0954's:** the user id with [`USER_ID_PREFIX`] removed,
+/// which is the lowercase hyphenated uuidv7 `iam-db` mints. The prefix is
+/// removed because its colons are not a segment character; the uuid stays
+/// because it discloses nothing, where a username would put personal data into
+/// every project id.
+///
+/// **CANONICAL OR NOTHING — FAIL CLOSED.** `Uuid::try_parse` also admits the
+/// upper-case, braced, `urn:uuid:` and un-hyphenated spellings, so parsing alone
+/// is not the test: the value must ALSO equal the uuid's own lowercase
+/// hyphenated rendering, byte for byte, and be a version-7 RFC 4122 uuid. A
+/// value that fails any of that — empty, unprefixed, upper-case, another URN
+/// kind, trailing whitespace — is not a user id this estate mints, so it owns no
+/// segment and registers no private path. Folding or trimming it into one
+/// instead would let a caller whose id is malformed claim the segment of
+/// somebody whose id is not.
+pub fn account_segment(user_id: &str) -> Option<&str> {
+    let seg = user_id.strip_prefix(USER_ID_PREFIX)?;
+    let uuid = uuid::Uuid::try_parse(seg).ok()?;
+    let canonical = uuid.get_version_num() == 7
+        && uuid.get_variant() == uuid::Variant::RFC4122
+        && uuid.hyphenated().to_string() == seg;
+    canonical.then_some(seg)
+}
+
+/// Whether *path* lies under the private root *seg* owns, SPELLED CANONICALLY:
+/// `local/<seg>` itself or anything beneath it, with `local` and `<seg>` both
+/// byte-exact (ADR-0954).
+///
+/// **BYTE-EXACT, ALTHOUGH THE STORE FOLDS CASE.** `uq_project_path` and
+/// `ck_project_class_path` fold ASCII case, so `LOCAL/<seg>/x` and an upper-case
+/// uuid are the same key as the canonical spelling, and [`is_private_class`]
+/// folds to agree with the engine about WHICH CLASS a row is in. This asks a
+/// different question — whether a registration names the caller's OWN root —
+/// and answers it only for the one spelling ADR-0954 defines. Every other
+/// spelling is refused rather than normalised, the rule this module applies to
+/// the whole grammar.
+pub fn is_under_own_root(path: &str, seg: &str) -> bool {
+    let mut segments = path.split('/');
+    segments.next() == Some(RESERVED_ROOT) && segments.next() == Some(seg)
 }
 
 /// Every character a path segment may contain.

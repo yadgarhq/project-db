@@ -264,3 +264,54 @@ fn a_path_wider_than_the_column_is_refused_without_being_echoed() {
     );
     assert!(err.message().contains("255"), "{}", err.message());
 }
+
+/// ADR-0954's rendering: the user id with `yadgar:user:` removed, and ONLY for
+/// the canonical lowercase hyphenated uuidv7. Literals throughout (ADR-0573).
+#[test]
+fn a_canonical_user_id_owns_its_lowercase_uuid_and_nothing_else_owns_a_segment() {
+    assert_eq!(
+        account_segment("yadgar:user:0192f3a4-5b6c-7d8e-9f01-23456789abc1"),
+        Some("0192f3a4-5b6c-7d8e-9f01-23456789abc1")
+    );
+    for bad in [
+        "",
+        "yadgar:user:",
+        "0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+        "yadgar:user:0192F3A4-5B6C-7D8E-9F01-23456789ABC1",
+        "YADGAR:USER:0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+        "yadgar:user:{0192f3a4-5b6c-7d8e-9f01-23456789abc1}",
+        "yadgar:user:urn:uuid:0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+        "yadgar:user:0192f3a45b6c7d8e9f0123456789abc1",
+        "yadgar:user:0192f3a4-5b6c-4d8e-9f01-23456789abc1",
+        "yadgar:user:0192f3a4-5b6c-7d8e-cf01-23456789abc1",
+        "yadgar:user:0192f3a4-5b6c-7d8e-9f01-23456789abc1 ",
+        "yadgar:project:0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+        "yadgar:user:abc",
+    ] {
+        assert_eq!(account_segment(bad), None, "{bad:?} owns no segment");
+    }
+}
+
+/// The caller's own root, spelled exactly: `local/<seg>` and beneath it.
+#[test]
+fn only_the_canonical_spelling_of_the_callers_own_root_is_under_it() {
+    let seg = "0192f3a4-5b6c-7d8e-9f01-23456789abc1";
+    for inside in [
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/home/max/git/alpha",
+    ] {
+        assert!(is_under_own_root(inside, seg), "{inside}");
+    }
+    for outside in [
+        "local",
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc2/x",
+        "local/0192F3A4-5B6C-7D8E-9F01-23456789ABC1/x",
+        "LOCAL/0192f3a4-5b6c-7d8e-9f01-23456789abc1/x",
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1x/y",
+        "local/0192f3a4-5b6c-7d8e-9f01-23456789abc",
+        "locals/0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+        "acme/0192f3a4-5b6c-7d8e-9f01-23456789abc1",
+    ] {
+        assert!(!is_under_own_root(outside, seg), "{outside}");
+    }
+}

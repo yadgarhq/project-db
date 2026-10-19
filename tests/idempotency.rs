@@ -11,8 +11,11 @@ const KEY: &str = "okapi-3f19-idem";
 /// `RegisterProject` — the one verb that claims a D9 key — registers the
 /// private class only since `SyncProjects` became the org writer (ADR-0936),
 /// so a D9 case has to be about a path it will register.
-const A: &str = "local/jaguar-4f80/alpha";
-const B: &str = "local/jaguar-4f80/bravo";
+const A: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/alpha";
+const B: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc1/bravo";
+/// A private path under [`U2`]'s own account segment, for the test that
+/// registers as [`U2`]: a registrant names only its own segment (ADR-0954).
+const B_U2: &str = "local/0192f3a4-5b6c-7d8e-9f01-23456789abc2/bravo";
 
 async fn world(name: &str) -> World {
     World::fresh(name).await
@@ -95,7 +98,7 @@ async fn two_users_may_choose_the_same_key() {
     w.register_as(A, "Alpha", U1, Some(KEY))
         .await
         .expect("register");
-    w.register_as(B, "Bravo", U2, Some(KEY))
+    w.register_as(B_U2, "Bravo", U2, Some(KEY))
         .await
         .expect("a second user's identical key is not a replay of the first's");
 

@@ -34,8 +34,22 @@ pub const B: &str = "pangolin-7c21/bravo";
 /// A service inside [`A`], for the depth the hierarchy is FOR (D53).
 pub const A_DEEP: &str = "pangolin-7c21/alpha/gamma";
 
-pub const U1: &str = "u1";
-pub const U2: &str = "u2";
+/// Two registrants, as the gateway attests them: `yadgar:user:<uuidv7>`, the
+/// shape `iam-db` mints (`src/service/identity.rs`).
+///
+/// **CANONICAL, BECAUSE `RegisterProject` NOW READS THEM (ADR-0954).** A private
+/// path's account segment is the user id with `yadgar:user:` removed, so a
+/// fixture user id that is not a canonical lowercase uuidv7 can register no
+/// private path at all. The segments are spelled out as literals rather than
+/// derived from the ids (ADR-0573): a fixture that stripped the prefix the way
+/// the code does could not fail when the code strips it wrongly.
+pub const U1: &str = "yadgar:user:0192f3a4-5b6c-7d8e-9f01-23456789abc1";
+pub const U2: &str = "yadgar:user:0192f3a4-5b6c-7d8e-9f01-23456789abc2";
+
+/// The account segments of [`U1`] and [`U2`]: the lowercase uuidv7, prefix
+/// removed (ADR-0954).
+pub const U1_SEG: &str = "0192f3a4-5b6c-7d8e-9f01-23456789abc1";
+pub const U2_SEG: &str = "0192f3a4-5b6c-7d8e-9f01-23456789abc2";
 
 /// The repository an ORG-class fixture row names as the governor of its
 /// namespace, when the test is not about the value.
