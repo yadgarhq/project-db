@@ -41,7 +41,7 @@ repos:
     # `ADR-0523-LIBRARY-WATCHED` marker in `src/rotate.rs`. B-U5 moved this
     # binary's only direct boot read into `yadgar_lifecycle::serve_tls`, so
     # without it the gate judged zero reads and refused.
-    rev: v1.34.0
+    rev: v1.36.1
     hooks:
       - id: gitleaks
       - id: prettier
@@ -70,33 +70,6 @@ repos:
       - id: actionlint
       - id: cargo-fmt
       - id: cargo-clippy
-      - id: cargo-deny
-      - id: observe-coverage
-      - id: helm-lint
-      # ADR-0569'S GATE, AND THE REASON THIS REPOSITORY IS ONLY NOW RUNNING IT.
-      # The gate was a shell script copied byte-identically into five
-      # repositories — gateway, iam, iam-db, task and task-db — each declaring it
-      # `repo: local`. `project-db` never carried a copy, so it kept `fn env_or`
-      # and eleven compiled-in defaults while the rule was "enforced estate-wide"
-      # (ledger 626 closed on that claim; ledger 715 is it being false). Five
-      # copies checked the five repositories that already passed.
-      #
-      # `yadgarhq/actions` v1.15.0 publishes it (actions#59), and ADR-0577 says a
-      # published gate is closed only when every consumer references it — which is
-      # what this line is. The rev moves from v1.13.1 to v1.15.0 for the whole
-      # block because pre-commit resolves one rev per repository entry.
-      - id: no-compiled-in-defaults
-      # LEDGER 734, adopting ledger 726's gate: a file read at boot is marked
-      # ADR-0523-WATCHED naming a src/rotate.rs material, or ADR-0523-UNWATCHED
-      # with a reason. This repository had never run it before this PR.
-      # LEDGER 658. A mechanical ceiling on the size of a `run:` block. Adopted
-      # for CLASS UNIFORMITY rather than for a violation here: measured
-      # 2026-09-09 this repository's workflows hold no block scalar at all,
-      # exactly like the nine other consumers that already carry the id. A
-      # consumer's workflow is a caller. The gate arms the day someone writes
-      # the first real block, which is the point of listing it before then.
-      - id: run-block-size
-      - id: boot-reads-watched
       # LEDGER 719. Two ceilings, and they measure different things. `complexity`
       # is the line count — 500 per file, 120 per function — which catches a flat
       # file that grew rather than a tangled one. `cargo-clippy-complexity` is
@@ -124,6 +97,33 @@ repos:
       # hook in this block changes behaviour.
       - id: complexity
       - id: cargo-clippy-complexity
+      - id: cargo-deny
+      - id: observe-coverage
+      - id: helm-lint
+      # ADR-0569'S GATE, AND THE REASON THIS REPOSITORY IS ONLY NOW RUNNING IT.
+      # The gate was a shell script copied byte-identically into five
+      # repositories — gateway, iam, iam-db, task and task-db — each declaring it
+      # `repo: local`. `project-db` never carried a copy, so it kept `fn env_or`
+      # and eleven compiled-in defaults while the rule was "enforced estate-wide"
+      # (ledger 626 closed on that claim; ledger 715 is it being false). Five
+      # copies checked the five repositories that already passed.
+      #
+      # `yadgarhq/actions` v1.15.0 publishes it (actions#59), and ADR-0577 says a
+      # published gate is closed only when every consumer references it — which is
+      # what this line is. The rev moves from v1.13.1 to v1.15.0 for the whole
+      # block because pre-commit resolves one rev per repository entry.
+      - id: no-compiled-in-defaults
+      # LEDGER 734, adopting ledger 726's gate: a file read at boot is marked
+      # ADR-0523-WATCHED naming a src/rotate.rs material, or ADR-0523-UNWATCHED
+      # with a reason. This repository had never run it before this PR.
+      # LEDGER 658. A mechanical ceiling on the size of a `run:` block. Adopted
+      # for CLASS UNIFORMITY rather than for a violation here: measured
+      # 2026-09-09 this repository's workflows hold no block scalar at all,
+      # exactly like the nine other consumers that already carry the id. A
+      # consumer's workflow is a caller. The gate arms the day someone writes
+      # the first real block, which is the point of listing it before then.
+      - id: run-block-size
+      - id: boot-reads-watched
       # LEDGER 837. `hooks/no_test_skips.py` refuses a test that stops
       # running — a skip marker, an unsatisfiable cfg, an environment-probe
       # guard at the first statement, a narrowed `cargo test`/pytest
