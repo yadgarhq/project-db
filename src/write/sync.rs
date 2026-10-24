@@ -54,11 +54,13 @@ use std::collections::{HashMap, HashSet};
 
 use sqlx::{MySql, Transaction};
 use tonic::Status;
+use yadgar_dial::Deadline;
 
 use super::grants;
 use crate::path;
 use crate::pb::yadgar::common::v1::Visibility;
 use crate::pb::yadgar::project::v1::*;
+use crate::pooled::Pooled;
 use crate::service::{ProjectDb, SYNC_CALLER};
 use crate::sql::{holes, internal};
 
@@ -82,6 +84,7 @@ impl ProjectDb {
         &self,
         caller: Option<&str>,
         req: SyncProjectsRequest,
+        deadline: Deadline,
     ) -> Result<SyncProjectsResponse, Status> {
         admit(caller)?;
         // NOT `sql::scope_of`, whose refusal says a Scope "is attested by the
@@ -96,7 +99,8 @@ impl ProjectDb {
         let actor = principal(&scope.user_id)?;
         let declared = validate(&req)?;
 
-        let mut tx = self.pool.begin().await.map_err(internal)?;
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
+        let mut tx = conn.begin().await?;
         let guards = Guards {
             allow_mass_archive: req.allow_mass_archive,
             allow_mass_revoke: req.allow_mass_revoke,

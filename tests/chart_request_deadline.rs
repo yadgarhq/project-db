@@ -33,8 +33,8 @@
 //! hold this check itself — its own request-timeout doc says so, because the
 //! `-db` charts live in seven other repositories it cannot read.
 //!
-//! `yadgar-dial` is a DEV-ONLY dependency here: nothing this binary ships
-//! dials anything, so this is the one place in this repository that reads it.
+//! `yadgar-dial` is a runtime dependency since v0.2.25 (ADR-1019: the deadline
+//! reader), but this is still the one place that reads its request-timeout floor.
 
 use std::path::{Path, PathBuf};
 

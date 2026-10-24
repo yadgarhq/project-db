@@ -4,9 +4,11 @@
 //! key, is in the parent module's header (`src/write.rs`).
 
 use tonic::Status;
+use yadgar_dial::Deadline;
 
 use crate::path;
 use crate::pb::yadgar::project::v1::*;
+use crate::pooled::Pooled;
 use crate::service::ProjectDb;
 use crate::sql::{holes, internal, scope_of};
 
@@ -108,6 +110,7 @@ impl ProjectDb {
     pub(crate) async fn touch(
         &self,
         req: TouchProjectsRequest,
+        deadline: Deadline,
     ) -> Result<TouchProjectsResponse, Status> {
         let _scope = scope_of(&req.scope)?;
 
@@ -159,7 +162,8 @@ impl ProjectDb {
               OR id IN (SELECT project_id FROM project_alias WHERE alias_path IN ({holes})))"
         );
 
-        let mut tx = self.pool.begin().await.map_err(internal)?;
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
+        let mut tx = conn.begin().await?;
 
         // THE WRITE FIRST, so that no read view stands in front of it. See this
         // function's documentation for the measurement.

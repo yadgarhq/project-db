@@ -75,6 +75,7 @@ async fn the_writes_still_refuse_an_absent_scope() {
                 display_name: "Probe".into(),
                 source_repo: String::new(),
             },
+            yadgar_dial::Deadline::none(),
         )
         .await
         .expect_err("a registration stamps created_by from the scope");
@@ -108,6 +109,7 @@ async fn the_writes_still_refuse_an_absent_scope() {
                 scope: None,
                 ..w.sync_request(&[declared(ROOT, "", FIXTURE_REPO)], &[], false)
             },
+            yadgar_dial::Deadline::none(),
         )
         .await
         .expect_err("a sync stamps created_by from the scope");

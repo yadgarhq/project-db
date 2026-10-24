@@ -48,6 +48,7 @@
 pub mod boot;
 mod idem;
 pub mod path;
+pub mod pooled;
 mod read;
 pub mod rotate;
 mod rows;
