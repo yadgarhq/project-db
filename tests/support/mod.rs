@@ -266,6 +266,10 @@ impl World {
     /// [`World::scope`] makes, and the one the v1.15.0 bump proved: the missing
     /// `source_repo` was a compile error here, which is what a rest pattern would
     /// have turned into a silently empty field.
+    ///
+    /// **SENT AS `project` SENDS IT**: the identity `project`'s leaf names,
+    /// which the gRPC handler reads off the peer certificate (ADR-1007;
+    /// `tests/sync_caller.rs` proves that half over real handshakes).
     async fn register_request(
         &self,
         path: &str,
@@ -275,15 +279,30 @@ impl World {
         source_repo: &str,
     ) -> Result<RegisterProjectResponse, Status> {
         self.db
-            .register_project(Request::new(RegisterProjectRequest {
-                idempotency: key.map(|k| Idempotency { key: k.into() }),
-                scope: self.scope(path, user),
-                path: path.into(),
-                display_name: display_name.into(),
-                source_repo: source_repo.into(),
-            }))
+            .register_as(
+                Some(yadgar_project_db::service::REGISTER_CALLER),
+                self.registration(path, display_name, user, key, source_repo),
+            )
             .await
-            .map(|r| r.into_inner())
+    }
+
+    /// The `RegisterProjectRequest` [`World::register_request`] sends, for a
+    /// test that sends it another way.
+    pub fn registration(
+        &self,
+        path: &str,
+        display_name: &str,
+        user: &str,
+        key: Option<&str>,
+        source_repo: &str,
+    ) -> RegisterProjectRequest {
+        RegisterProjectRequest {
+            idempotency: key.map(|k| Idempotency { key: k.into() }),
+            scope: self.scope(path, user),
+            path: path.into(),
+            display_name: display_name.into(),
+            source_repo: source_repo.into(),
+        }
     }
 
     /// Put a project at *path* and answer with its id, which is what most tests

@@ -78,6 +78,12 @@ record, and rewriting it is a rename (D53).
 refuses an org-class path with `FAILED_PRECONDITION`, so the two writers are
 disjoint by `ck_project_class`. Nothing in the estate calls it yet.
 
+Like `SyncProjects`, it admits **only `project`'s client leaf**
+(`project-caller`, ADR-1007). Every other caller, and a call with no client
+certificate, is refused `PERMISSION_DENIED` before the path is validated or
+the pool is touched. Every module's leaf verifies against the same authority, so
+verification alone admits nobody.
+
 It registers a private path only under the **registrant's own account segment**
 (ADR-0954): `local/<account>/...`, where `<account>` is the attested
 `Scope.user_id` with `yadgar:user:` removed — the lowercase uuidv7. Any other

@@ -49,7 +49,8 @@ async fn get_accepts_an_absent_scope() {
 }
 
 /// **THE WRITES STILL REFUSE AN ABSENT `Scope`, AND WRITE NOTHING.**
-/// `RegisterProject` and `TouchProjects` refuse through `sql::scope_of`;
+/// `RegisterProject` and `TouchProjects` refuse through `sql::scope_of`, the
+/// first after its caller is admitted;
 /// `SyncProjects` through its own check, after the caller is admitted. Each
 /// refusal opens "scope is required", so it is the absent `Scope` that refused
 /// it and not a later check on one of its fields (`Class::of` refuses an empty
@@ -65,13 +66,16 @@ async fn the_writes_still_refuse_an_absent_scope() {
     let rows = w.project_count().await;
 
     let register =
-        w.db.register_project(Request::new(RegisterProjectRequest {
-            idempotency: None,
-            scope: None,
-            path: PRIVATE.into(),
-            display_name: "Probe".into(),
-            source_repo: String::new(),
-        }))
+        w.db.register_as(
+            Some(yadgar_project_db::service::REGISTER_CALLER),
+            RegisterProjectRequest {
+                idempotency: None,
+                scope: None,
+                path: PRIVATE.into(),
+                display_name: "Probe".into(),
+                source_repo: String::new(),
+            },
+        )
         .await
         .expect_err("a registration stamps created_by from the scope");
     assert_eq!(register.code(), Code::InvalidArgument, "{register:?}");

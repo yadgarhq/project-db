@@ -54,7 +54,9 @@
 //! 641) and REFUSES an org-class path with `FAILED_PRECONDITION`, so the two
 //! writers are disjoint by `ck_project_class`, the engine's own constraint —
 //! the one-writer rule is mechanical rather than a convention. Nothing in the
-//! estate calls `RegisterProject` yet; ledger 641 is its caller.
+//! estate calls `RegisterProject` yet; ledger 641 is its caller, and that
+//! caller is `project`: the verb admits `project`'s leaf only, as
+//! `SyncProjects` does (ADR-1007).
 //!
 //! # The one namespace rule that spans two tables
 //!

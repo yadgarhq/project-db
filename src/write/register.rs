@@ -12,7 +12,7 @@ use crate::idem::{self, Claimed};
 use crate::path;
 use crate::pb::yadgar::common::v1::{Meta, Visibility};
 use crate::pb::yadgar::project::v1::*;
-use crate::service::ProjectDb;
+use crate::service::{ProjectDb, REGISTER_CALLER};
 use crate::sql::{internal, scope_of};
 
 /// The width of `project.display_name`, IN CHARACTERS, because that is what
@@ -63,7 +63,28 @@ const MAX_DISPLAY_NAME_CHARS: usize = 255;
 impl ProjectDb {
     /// Registration is an ADMINISTRATIVE act — GitOps or CLI, like configuration
     /// (D43). Agents resolve and read; they never mint a partition key (D52).
-    pub(crate) async fn register(
+    ///
+    /// `caller` is the common name on the client certificate the listener
+    /// verified, which the gRPC handler reads with
+    /// [`yadgar_lifecycle::serve_tls::caller_common_name`]. It is a parameter for
+    /// the reason [`ProjectDb::sync_as`] gives: over the wire there is no way to
+    /// supply it except by presenting the certificate.
+    pub async fn register_as(
+        &self,
+        caller: Option<&str>,
+        req: RegisterProjectRequest,
+    ) -> Result<RegisterProjectResponse, Status> {
+        // THE CALLER CHECK COMES BEFORE THE STORE (ADR-1007): before the path
+        // is validated and before the pool is touched. (The handler's telemetry
+        // has already read the Scope by then.) A refusal in `register` can
+        // say whether a path is taken; a caller that is not `project` gets none
+        // of those answers, and takes no connection out of the pool.
+        admit(caller)?;
+        self.register(req).await
+    }
+
+    /// The registration itself, for an admitted caller only.
+    async fn register(
         &self,
         req: RegisterProjectRequest,
     ) -> Result<RegisterProjectResponse, Status> {
@@ -322,6 +343,26 @@ fn meta_of(id: &str, version: u64, path: &str, actor: &str) -> Meta {
         deleted_at: None,
         derived_from: Vec::new(),
     }
+}
+
+/// Admit `project`'s leaf and refuse every other caller, or no caller at all
+/// (ADR-1007, the gate `SyncProjects` has had since ADR-0936).
+///
+/// **VERIFICATION ALONE ADMITS NOBODY HERE.** Every module's client leaf
+/// verifies against the same internal authority, so a `required` listener lets
+/// `gateway`, `task`, `iam` and the seeder through the handshake. Without this
+/// check, any of them could register a private row in any account's name its
+/// own `Scope` claimed.
+fn admit(caller: Option<&str>) -> Result<(), Status> {
+    if caller == Some(REGISTER_CALLER) {
+        return Ok(());
+    }
+    Err(Status::permission_denied(format!(
+        "RegisterProject is callable by `project` only (ADR-1007): the client certificate \
+         must name {REGISTER_CALLER:?}, and this one names {}. Every module's leaf verifies \
+         against the same authority, so verification alone admits nobody here",
+        caller.map_or_else(|| "no caller".to_string(), |c| format!("{c:?}"))
+    )))
 }
 
 /// Which project, if any, holds `alias` as a former path.
