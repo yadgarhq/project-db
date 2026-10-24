@@ -86,7 +86,7 @@ fn capped(s: &str) -> std::borrow::Cow<'_, str> {
 /// 1254). Read BEFORE the request is consumed: `into_inner` drops the metadata.
 ///
 /// Capped rather than refused, and an absent or unreadable value is `""`,
-/// because a correlation id must never fail a call (D25). A header is bounded
+/// because a correlation id must never fail a call (D67). A header is bounded
 /// only by the transport, and this `String` reaches the `CallRecord`.
 pub fn request_id_of<T>(req: &tonic::Request<T>) -> String {
     req.metadata()
