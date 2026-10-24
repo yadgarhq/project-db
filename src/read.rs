@@ -1,9 +1,12 @@
 //! `ResolveProject`, `GetProject` and `ListProjects`.
 
+use sqlx::MySqlConnection;
 use tonic::Status;
+use yadgar_dial::Deadline;
 
 use crate::path;
 use crate::pb::yadgar::project::v1::*;
+use crate::pooled::Pooled;
 use crate::rows::{row_to_project, COLUMNS};
 use crate::service::ProjectDb;
 use crate::sql::{holes, internal, subtree, ESCAPE};
@@ -43,6 +46,7 @@ impl ProjectDb {
     pub(crate) async fn resolve(
         &self,
         req: ResolveProjectRequest,
+        deadline: Deadline,
     ) -> Result<ResolveProjectResponse, Status> {
         path::validate("candidate_path", &req.candidate_path)?;
         // BEFORE `ancestors`, NOT AFTER, and the ordering is load-bearing rather
@@ -80,7 +84,8 @@ impl ProjectDb {
             .into_iter()
             .filter(|ancestor| !ancestor.eq_ignore_ascii_case(path::RESERVED_ROOT))
             .collect();
-        let found = ancestor_rows(&self.pool, &chain).await?;
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
+        let found = ancestor_rows(conn.conn(), &chain).await?;
 
         // THE DEEPEST MATCH WINS, and the ancestor chain is a chain of strict
         // prefixes, so the longest `matched` IS the deepest. A live path beats
@@ -172,7 +177,11 @@ impl ProjectDb {
     ///
     /// The response carries the canonical `path` and every alias, so a caller
     /// that arrived by an old path can see which one it reached.
-    pub(crate) async fn get(&self, req: GetProjectRequest) -> Result<GetProjectResponse, Status> {
+    pub(crate) async fn get(
+        &self,
+        req: GetProjectRequest,
+        deadline: Deadline,
+    ) -> Result<GetProjectResponse, Status> {
         path::validate("path", &req.path)?;
 
         // AUDIT: the interpolation is this module's own column list; every
@@ -184,11 +193,12 @@ impl ProjectDb {
               ORDER BY CASE WHEN path = ? THEN 0 ELSE 1 END
               LIMIT 1"
         );
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&req.path)
             .bind(&req.path)
             .bind(&req.path)
-            .fetch_optional(&self.pool)
+            .fetch_optional(conn.conn())
             .await
             .map_err(internal)?
             .ok_or_else(|| {
@@ -198,9 +208,8 @@ impl ProjectDb {
                 ))
             })?;
 
-        let project = self
-            .with_grants(self.with_aliases(vec![row_to_project(&row)?]).await?)
-            .await?;
+        let project = Self::with_aliases(conn.conn(), vec![row_to_project(&row)?]).await?;
+        let project = Self::with_grants(conn.conn(), project).await?;
         Ok(GetProjectResponse {
             project: project.into_iter().next(),
         })
@@ -209,6 +218,7 @@ impl ProjectDb {
     pub(crate) async fn list(
         &self,
         req: ListProjectsRequest,
+        deadline: Deadline,
     ) -> Result<ListProjectsResponse, Status> {
         let limit = page_size(req.page_size);
         let status = status_filter(req.status)?;
@@ -249,9 +259,10 @@ impl ProjectDb {
         if !req.page_token.is_empty() {
             query = query.bind(&req.page_token);
         }
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
         let mut rows = query
             .bind(i64::from(limit) + 1)
-            .fetch_all(&self.pool)
+            .fetch_all(conn.conn())
             .await
             .map_err(internal)?;
 
@@ -261,7 +272,8 @@ impl ProjectDb {
             .iter()
             .map(row_to_project)
             .collect::<Result<Vec<_>, _>>()?;
-        let projects = self.with_grants(self.with_aliases(projects).await?).await?;
+        let projects = Self::with_aliases(conn.conn(), projects).await?;
+        let projects = Self::with_grants(conn.conn(), projects).await?;
 
         let next_page_token = match projects.last() {
             Some(last) if more => last.path.clone(),
@@ -287,7 +299,10 @@ impl ProjectDb {
     /// multiplies the page by the alias count and `row_to_project` would then
     /// have to de-duplicate it, and `GROUP_CONCAT` invents a separator that a
     /// path could contain and silently truncates at `group_concat_max_len`.
-    async fn with_aliases(&self, mut projects: Vec<Project>) -> Result<Vec<Project>, Status> {
+    async fn with_aliases(
+        conn: &mut MySqlConnection,
+        mut projects: Vec<Project>,
+    ) -> Result<Vec<Project>, Status> {
         if projects.is_empty() {
             return Ok(projects);
         }
@@ -312,7 +327,7 @@ impl ProjectDb {
         for id in &ids {
             query = query.bind(id);
         }
-        let pairs = query.fetch_all(&self.pool).await.map_err(internal)?;
+        let pairs = query.fetch_all(conn).await.map_err(internal)?;
 
         for project in &mut projects {
             let Some(id) = project.meta.as_ref().map(|m| m.id.as_str()) else {
@@ -336,7 +351,10 @@ impl ProjectDb {
     /// is the reader's to compute. Ordered by team id, so a page renders the
     /// same twice. ORG ROWS ONLY (ruling 7): a grant row naming a private row
     /// can only be a store defect, and it is never read.
-    async fn with_grants(&self, mut projects: Vec<Project>) -> Result<Vec<Project>, Status> {
+    async fn with_grants(
+        conn: &mut MySqlConnection,
+        mut projects: Vec<Project>,
+    ) -> Result<Vec<Project>, Status> {
         let ids: Vec<String> = projects
             .iter()
             .filter_map(|p| p.meta.as_ref().map(|m| m.id.clone()))
@@ -357,7 +375,7 @@ impl ProjectDb {
         for id in &ids {
             query = query.bind(id);
         }
-        let rows = query.fetch_all(&self.pool).await.map_err(internal)?;
+        let rows = query.fetch_all(conn).await.map_err(internal)?;
         for project in &mut projects {
             let Some(id) = project.meta.as_ref().map(|m| m.id.as_str()) else {
                 continue;
@@ -404,7 +422,7 @@ impl ProjectDb {
 /// chain filter and the `exact` check are both still in `resolve`, and the
 /// third is `path::refuse_reserved_root`.
 async fn ancestor_rows(
-    pool: &sqlx::MySqlPool,
+    conn: &mut MySqlConnection,
     chain: &[&str],
 ) -> Result<Vec<(String, String, i8, i64, Option<String>)>, Status> {
     let holes = holes(chain.len());
@@ -425,7 +443,7 @@ async fn ancestor_rows(
     for candidate in chain.iter().chain(chain.iter()) {
         query = query.bind(*candidate);
     }
-    query.fetch_all(pool).await.map_err(internal)
+    query.fetch_all(conn).await.map_err(internal)
 }
 
 /// A page size the caller did not set is 0, which would return nothing and look

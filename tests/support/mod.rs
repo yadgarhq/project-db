@@ -112,6 +112,12 @@ fn base() -> String {
     }
 }
 
+/// The URL of the fixture database `name`, for a test that opens a pool of
+/// its own shape on a database [`World::fresh`] built.
+pub fn database_url(name: &str) -> String {
+    format!("{}/{name}", base())
+}
+
 /// A service and the pool behind it, dropped and recreated per test.
 ///
 /// The POOL is exposed deliberately: a few assertions are about what is IN a
@@ -282,6 +288,7 @@ impl World {
             .register_as(
                 Some(yadgar_project_db::service::REGISTER_CALLER),
                 self.registration(path, display_name, user, key, source_repo),
+                yadgar_dial::Deadline::none(),
             )
             .await
     }
@@ -775,6 +782,7 @@ impl World {
             .sync_as(
                 Some(yadgar_project_db::service::SYNC_CALLER),
                 self.sync_request(roots, projects, allow_mass_archive),
+                yadgar_dial::Deadline::none(),
             )
             .await
     }
@@ -814,7 +822,11 @@ impl World {
         let mut req = self.sync_request(roots, projects, false);
         req.allow_mass_revoke = allow_mass_revoke;
         self.db
-            .sync_as(Some(yadgar_project_db::service::SYNC_CALLER), req)
+            .sync_as(
+                Some(yadgar_project_db::service::SYNC_CALLER),
+                req,
+                yadgar_dial::Deadline::none(),
+            )
             .await
     }
 

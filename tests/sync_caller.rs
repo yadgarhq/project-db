@@ -383,7 +383,10 @@ async fn register_admits_the_exact_name_only() {
         Some(" project-caller"),
         Some(""),
     ] {
-        let err = db.register_as(caller, probe()).await.unwrap_err();
+        let err = db
+            .register_as(caller, probe(), yadgar_dial::Deadline::none())
+            .await
+            .unwrap_err();
         assert_eq!(
             err.code(),
             Code::PermissionDenied,
