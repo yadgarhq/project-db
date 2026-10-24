@@ -69,6 +69,7 @@ use tonic::Status;
 use crate::pb::yadgar::project::v1::*;
 use crate::service::ProjectDb;
 
+mod grants;
 mod register;
 mod sync;
 mod touch;

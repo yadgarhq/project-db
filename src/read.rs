@@ -198,7 +198,9 @@ impl ProjectDb {
                 ))
             })?;
 
-        let project = self.with_aliases(vec![row_to_project(&row)?]).await?;
+        let project = self
+            .with_grants(self.with_aliases(vec![row_to_project(&row)?]).await?)
+            .await?;
         Ok(GetProjectResponse {
             project: project.into_iter().next(),
         })
@@ -259,7 +261,7 @@ impl ProjectDb {
             .iter()
             .map(row_to_project)
             .collect::<Result<Vec<_>, _>>()?;
-        let projects = self.with_aliases(projects).await?;
+        let projects = self.with_grants(self.with_aliases(projects).await?).await?;
 
         let next_page_token = match projects.last() {
             Some(last) if more => last.path.clone(),
@@ -320,6 +322,53 @@ impl ProjectDb {
                 .iter()
                 .filter(|(project_id, _)| project_id == id)
                 .map(|(_, alias)| alias.clone())
+                .collect();
+        }
+        Ok(projects)
+    }
+}
+
+impl ProjectDb {
+    /// Fill in `Project.grants` for a whole page, in ONE statement, for the
+    /// reason [`Self::with_aliases`] exists: a repeated field no read path
+    /// fills decodes as empty, which is legal, so a dropped grant would be
+    /// silent (team access stage 4). Each row's OWN grants only; inheritance
+    /// is the reader's to compute. Ordered by team id, so a page renders the
+    /// same twice. ORG ROWS ONLY (ruling 7): a grant row naming a private row
+    /// can only be a store defect, and it is never read.
+    async fn with_grants(&self, mut projects: Vec<Project>) -> Result<Vec<Project>, Status> {
+        let ids: Vec<String> = projects
+            .iter()
+            .filter_map(|p| p.meta.as_ref().map(|m| m.id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return Ok(projects);
+        }
+        // AUDIT: the interpolation is a count of `?` placeholders; every value
+        // is bound.
+        let sql = format!(
+            "SELECT g.project_id, g.team_id, g.level FROM project_grant g
+               JOIN project p ON p.id = g.project_id
+              WHERE g.project_id IN ({}) AND p.owner_user_id IS NULL
+              ORDER BY g.team_id",
+            holes(ids.len())
+        );
+        let mut query = sqlx::query_as::<_, (String, String, i8)>(sqlx::AssertSqlSafe(sql));
+        for id in &ids {
+            query = query.bind(id);
+        }
+        let rows = query.fetch_all(&self.pool).await.map_err(internal)?;
+        for project in &mut projects {
+            let Some(id) = project.meta.as_ref().map(|m| m.id.as_str()) else {
+                continue;
+            };
+            project.grants = rows
+                .iter()
+                .filter(|(project_id, _, _)| project_id == id)
+                .map(|(_, team_id, level)| DeclaredGrant {
+                    team_id: team_id.clone(),
+                    level: i32::from(*level),
+                })
                 .collect();
         }
         Ok(projects)

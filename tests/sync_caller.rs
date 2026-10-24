@@ -264,6 +264,7 @@ async fn every_other_verifying_leaf_is_refused_before_the_store() {
             roots: vec![declared("tapir-1", "", "tapir-1/registry")],
             projects: vec![],
             allow_mass_archive: false,
+            allow_mass_revoke: false,
         };
         let err = sync_over_tls(port, &pki, pki.client(name), req)
             .await

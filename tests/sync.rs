@@ -417,6 +417,7 @@ async fn a_caller_that_is_not_project_is_refused_before_any_connection() {
         roots: vec![declared(w, "", REPO)],
         projects: vec![],
         allow_mass_archive: false,
+        allow_mass_revoke: false,
     };
     for caller in [
         None,

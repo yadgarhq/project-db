@@ -24,6 +24,7 @@ fn all() -> Vec<Migration> {
         pin_the_path_collation(),
         project_sync_lock(),
         project_class_columns(),
+        project_grant(),
     ]
 }
 
@@ -469,6 +470,29 @@ fn project_class_columns() -> Migration {
               ALTER TABLE project
                 ADD CONSTRAINT IF NOT EXISTS ck_project_class_path
                   CHECK ((owner_user_id IS NOT NULL) = (path LIKE 'local/%'))"
+            .into(),
+    }
+}
+
+/// **TEAM GRANTS ON ORG ROWS** (ADR-0962, ADR-0963 (1), team access stage 4):
+/// one row per (project, team), level read (1) or read-write (2), written only
+/// by `SyncProjects`. Deleted, not archived: a grant is not a partition key
+/// (ADR-0934), and its history is the GitOps log. `team_id` is no foreign key,
+/// because teams live in `iam-db`; a grant naming an unknown team matches
+/// nobody. The CHECK keeps `GRANT_LEVEL_UNSPECIFIED` (0) out of the table.
+fn project_grant() -> Migration {
+    Migration {
+        version: 7,
+        name: "project_grant".into(),
+        sql: "CREATE TABLE IF NOT EXISTS project_grant (
+                  project_id VARCHAR(96) NOT NULL,
+                  team_id    VARCHAR(96) NOT NULL,
+                  level      TINYINT     NOT NULL,
+                  PRIMARY KEY (project_id, team_id),
+                  CONSTRAINT fk_project_grant_project FOREIGN KEY (project_id)
+                      REFERENCES project (id) ON DELETE CASCADE,
+                  CONSTRAINT ck_project_grant_level CHECK (level IN (1, 2))
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
             .into(),
     }
 }

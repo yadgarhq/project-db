@@ -21,24 +21,30 @@ enum ProjectStatus {
   // resolves a candidate for a WRITE and gets this status refuses the write; a READ still answers. The
   // refusal belongs to whoever composes the write's refusal — the gateway —
   // and NOT to this contract, which carries the status and no reason code.
-  // Stated here because no code enforces it yet: today neither resolver
-  // refuses on status, so a write to an archived project still lands.
+  // Since gateway v0.12.10 (gateway#118, ledger 1612) the gateway classifies a
+  // write to an archived project as `PROJECT_ARCHIVED`. Under `enforcing` it
+  // refuses the write. Under `counting`, the live mode (ADR-0841), it counts
+  // the write and the write still lands. The resolvers do not refuse on status.
   PROJECT_STATUS_ARCHIVED = 2;
 }
 
 // WHAT A PROJECT DOES NOT DECLARE, AND WHY THAT IS A DECISION RATHER THAN AN
-// OMISSION (ledger 644). There is no owner on this message and no visibility.
+// OMISSION (ledger 644). There is no visibility ladder on this message, and its
+// owner arrives through `Meta`, not as a field of its own.
 //
 // `project-db/src/path.rs` describes two classes sharing one namespace and told
-// apart by the FIRST SEGMENT alone — an organisation project `<org>/<repo>`
+// apart by the FIRST SEGMENT alone: an organisation project `<org>/<repo>`
 // "visible to everyone", and a private one beneath the reserved `local` segment
-// "visible only to the account that owns it". NOTHING CAN ENFORCE EITHER. The
-// merged table (`project-db/src/schema.rs`, migration 1) carries `created_by`
-// and `updated_by` and no third identity column, and D12 names those two as
-// AUDIT identity, distinct from ownership.
+// "visible only to the account that owns it". A private row HAS an owner: the
+// store carries it as `owner_user_id` (project-db migration 6), and
+// `Meta.owner_user_id` is where this contract reports it. The gateway's
+// membership check (ADR-0947, `plans/project-membership.md`) will enforce it
+// once the gateway runs under Enforcing. This message enforces nothing. D12
+// names `created_by` and `updated_by` as AUDIT identity, distinct from
+// ownership.
 //
-// Declaring the fields here would not close that, because what is missing is
-// three rulings rather than two columns:
+// What stays undeclared is a second visibility ladder, because what is missing
+// is rulings rather than columns:
 //
 // - D27 is one deployment and one organisation, and D12 draws the consequence
 //   in as many words: no `org_id` field exists, because hosting several
@@ -57,8 +63,8 @@ enum ProjectStatus {
 //   paragraph exists to prevent.
 //
 // A contract that guessed at an authorisation model would be worse than one
-// that omits it. These fields are additive on the day the rulings land; a wrong
-// shape is one every consumer has already compiled against.
+// that omits it. A field added for a ruled need is additive; a wrong shape is
+// one every consumer has already compiled against.
 message Project {
   yadgar.common.v1.Meta meta = 1;
 
@@ -77,6 +83,14 @@ message Project {
   // Former paths that still resolve here. A rename is an alias, never a rewrite
   // of every record carrying the old path (D53).
   repeated string aliases = 20;
+
+  // THIS ROW'S OWN TEAM GRANTS (ADR-0962, ADR-0963 (1), plans/team-access.md
+  // §4). Written only by `SyncProjects` from the GitOps declaration, and
+  // relayed by `project` into `RegisteredPath.grants`. NOT INHERITED: a grant
+  // on an ancestor is not repeated here, and a reader computes inheritance from
+  // the whole loaded set. EMPTY ON EVERY PRIVATE (`local/...`) ROW, which no
+  // grant can name. A `project-db` that predates grants leaves it empty.
+  repeated DeclaredGrant grants = 21;
 }
 
 message RegisterProjectRequest {
@@ -235,6 +249,45 @@ message DeclaredProject {
   // `ck_project_class` gives an org row a `source_repo` and never an owner.
   // Same canonical form as `RegisterProjectRequest.source_repo`.
   string source_repo = 3;
+
+  // THE TEAMS THIS ROW ADMITS, AND AT WHAT LEVEL (ADR-0962, ADR-0963 (1)).
+  // Grants name teams, never users. A grant on a row covers every row beneath
+  // it, archived rows included, so most projects declare none and inherit from
+  // their root. EMPTY MEANS "INHERIT ONLY", never "everyone".
+  //
+  // The store REPLACES this row's grant set with this list on every sync, and
+  // deletes the grants of a row it archives. Refused `INVALID_ARGUMENT`, naming
+  // the path, and nothing written: a `GRANT_LEVEL_UNSPECIFIED` level, a
+  // malformed `team_id`, or one team named twice on one row.
+  //
+  // A `project-db` or `project` that predates this field DROPS IT SILENTLY
+  // (proto3). `SyncProjectsResponse.grants_declared` is the echo that makes the
+  // drop loud: a seeder that sent N grants and reads back 0 exits non-zero.
+  repeated DeclaredGrant grants = 4;
+}
+
+// How much a team grant admits (ADR-0962: "a grant is either read or
+// read-write"). A write under `GRANT_LEVEL_READ` is refused
+// `PROJECT_READ_ONLY` once the gateway enforces grants (ADR-0963 (3)).
+enum GrantLevel {
+  // REFUSED ON INPUT AND NEVER STORED. A grant with no level is a malformed
+  // declaration, not a read grant: reading the zero value as the narrower
+  // level would turn a dropped field into a silent downgrade.
+  GRANT_LEVEL_UNSPECIFIED = 0;
+  GRANT_LEVEL_READ = 1;
+  GRANT_LEVEL_READ_WRITE = 2;
+}
+
+// One team's grant on one row. Used by the declaration (`DeclaredProject`),
+// by the stored row (`Project.grants`) and by the load (`RegisteredPath`).
+message DeclaredGrant {
+  // "yadgar:team:<name>", where <name> matches `^[a-z][a-z0-9-]{0,62}$`. The id
+  // is DETERMINISTIC from the declared team name, so the grant and the team
+  // (written to `iam` by `SyncTeams`) never exchange a minted id. A grant
+  // naming a team `iam` does not hold matches nobody, because no caller's
+  // `Scope.team_ids` carries it: a missing half fails closed.
+  string team_id = 1;
+  GrantLevel level = 2;
 }
 
 // THE WHOLE DECLARATION, in one request (ADR-0936). Not a per-row write: the
@@ -296,6 +349,15 @@ message SyncProjectsRequest {
   // `FAILED_PRECONDITION` AND NOT `INVALID_ARGUMENT`, because the request is
   // well-formed: whether it trips depends on what the store holds.
   bool allow_mass_archive = 4;
+
+  // THE MASS-REVOKE GUARD (ADR-0963 (6)). False by default, and false is the
+  // guard ON. With this false, a sync that would DELETE STRICTLY MORE THAN HALF
+  // of the grant rows stored when the sync takes its lock is refused
+  // `FAILED_PRECONDITION`, naming both counts and this field, and writes
+  // nothing. Exactly half is admitted. A level change is an update, not a
+  // delete. A cold install has zero stored grants and never trips it. The rows
+  // guard above and this one are independent: either can refuse a sync.
+  bool allow_mass_revoke = 5;
 }
 
 // What the sync did, counted per row. Every declared row lands in exactly one
@@ -316,6 +378,25 @@ message SyncProjectsResponse {
   uint32 reactivated = 4;
   // Declared, `ACTIVE`, and identical: no write, no version change.
   uint32 unchanged = 5;
+
+  // THE GRANT COUNTS (ADR-0963 (1)). A grant change does NOT change the row's
+  // `version` and does not move the row between the five counts above.
+  //
+  // `grants_declared` is the number of grants the store PARSED from the
+  // request, an echo rather than an outcome. A store or a relay that predates
+  // grants answers 0 here whatever was sent, which is how the seeder detects a
+  // silently dropped field.
+  uint32 grants_declared = 6;
+  // A (row, team) pair declared and not stored.
+  uint32 grants_inserted = 7;
+  // A stored pair not declared, including every grant of a row this sync
+  // archived. Counted against `allow_mass_revoke`. A level change on a kept
+  // pair is not counted here.
+  uint32 grants_deleted = 8;
+  // A stored pair declared with the same level. A pair whose level changed is
+  // rewritten and counted in neither this nor `grants_inserted`; it is
+  // `grants_declared - grants_inserted - grants_unchanged`.
+  uint32 grants_unchanged = 9;
 }
 
 // Registration is administrative — GitOps or CLI, like configuration (D43).
@@ -327,11 +408,13 @@ message SyncProjectsResponse {
 // `ProjectService.SyncProjects`, which `project` relays here. That makes
 // `SyncProjects` the ONE writer of org-class rows.
 //
-// `RegisterProject` IS THE PERSONAL-CLASS PATH (`local/...`, ledger 641), and
-// is narrowing to it: the `project-db` release that serves `SyncProjects`
-// refuses an org-class path here with `FAILED_PRECONDITION`, so the two
-// writers are disjoint by `ck_project_class`, the engine's own constraint.
-// Until that release it accepts both classes, and no module calls it. An
+// `RegisterProject` IS THE PERSONAL-CLASS PATH (`local/...`, ledger 641): since
+// `project-db` v0.7.0, which serves `SyncProjects`, it refuses an org-class
+// path here with `FAILED_PRECONDITION`, so the two writers are disjoint by
+// `ck_project_class`, the engine's own constraint. Since `project-db` v0.8.0
+// (ADR-0954) it also refuses, with `PERMISSION_DENIED`, a `local/<seg>/...` path
+// whose `<seg>` is not the registrant's `scope.user_id` with `yadgar:user:`
+// removed (its lowercase uuidv7). No module calls it. An
 // operator port-forward to it is break-glass: exempt under ADR-0938 only while
 // a human starts it, no code path runs it, and no standing route makes it
 // reachable. It is not a registration path for any module.
@@ -408,17 +491,22 @@ service ProjectDbService {
 // not.
 // ---------------------------------------------------------------------------
 
-// One registered path, and the three fields a resolution walk reads.
+// One registered path, and the fields the gateway reads from the loaded set:
+// the path, status and aliases a resolution walk reads, and the owner of a
+// private row that the membership check reads after it.
 //
 // NOT `Project`, AND THE DEVIATION IS RULED RATHER THAN PREFERRED.
 // `plans/project-registry-callers.md` §1 names what the load returns — "every
-// live path, its status, and its aliases" — which is exactly these three, and
-// the estate's own precedent points the other way (`FindTasksResponse` returns
-// the storage entity `yadgar.task.v1.Task`). The second reason is the one that
-// would otherwise arrive by surprise: `Project` carries `Meta`, and who OWNS a
-// project is unresolved — see the note above that message. A load shape that
-// echoed the row would begin shipping an ownership answer to every caller on
-// the day the column lands, before anything ruled what it means.
+// live path, its status, and its aliases" — and `plans/project-membership.md`
+// (ADR-0947) adds one field, the owner of a private row, because the gateway's
+// membership check reads it on every call into such a row. The estate's own
+// precedent points the other way (`FindTasksResponse` returns the storage
+// entity `yadgar.task.v1.Task`). The second reason is what stays out:
+// `Project` carries `Meta` (`team_id`, `visibility`, `created_by`,
+// `updated_by`), `display_name` and `last_seen_at`, and no hot-path check
+// reads any of them. Ownership ships here as ONE ruled field rather than as an
+// echo of the row, so a column added to `Meta` later does not reach every
+// caller of the load before anything rules what it means.
 message RegisteredPath {
   string path = 1;
 
@@ -437,6 +525,46 @@ message RegisteredPath {
   // reason (`project-db/src/read.rs`); a walk over this set is the same walk
   // and needs the same two inputs.
   repeated string aliases = 3;
+
+  // The registrant of a PRIVATE-class row: the one user the gateway admits to
+  // the row once membership is enforced (ADR-0947,
+  // `plans/project-membership.md`). This message enforces nothing, and under
+  // Counting every caller is still served.
+  //
+  // EMPTY ON EVERY ORG ROW, and the class is read from `path`, NOT from this
+  // field. A row is private iff its first segment equals `local` compared
+  // ASCII-case-insensitively — the same fold as
+  // `ProjectServiceListProjectsResponse.paths` — so `LOCAL/x` is private. Any
+  // other first segment is org. Never decide the class by whether this is set.
+  //
+  // EMPTY ON A PRIVATE ROW IS A MISSING OWNER, NEVER AN ORG ROW: the `project`
+  // or `project-db` serving the load predates relaying it, or the store is
+  // defective. A caller MUST treat that row as owned by nobody (fail closed).
+  // proto3 gives a bare `string` no presence bit, so empty means absent.
+  //
+  // The row's stored owner, which `project-db` relays as `Meta.owner_user_id`.
+  // `ck_project_class_path` makes it non-null exactly on `local/%` rows, and
+  // `ck_project_class` makes it and `source_repo` mutually exclusive.
+  //
+  // SENT ONLY TO THE GATEWAY. Since `project` v0.4.0 (ledger 1643),
+  // `ProjectService.ListProjects` admits one caller: the leaf must name exactly
+  // `gateway-caller`. Any other workload is refused before the relay, so only
+  // the gateway, of `ProjectService`'s callers, receives the owner ids.
+  string owner_user_id = 4;
+
+  // THIS ROW'S OWN TEAM GRANTS, NOT ITS EFFECTIVE ONES (ADR-0962,
+  // plans/team-access.md §3). The gateway computes inheritance from the whole
+  // loaded set: a row's effective grants are its own plus those of every row
+  // whose path is a segment-wise proper prefix of its canonical path. Shipping
+  // effective grants would repeat each root grant on every row and hide which
+  // row declared it.
+  //
+  // EMPTY IS NORMAL on an org row that inherits from its root. A reader MUST
+  // IGNORE any grant on a private (`local/...`) row: none can be declared, so
+  // one arriving is a store defect, and private rows stay owner-only
+  // (ADR-0952). A `project` that predates this field sends none, and a gateway
+  // enforcing grants then denies every org row (fail closed).
+  repeated DeclaredGrant grants = 5;
 }
 
 // The registry LOAD: every registered path, so a caller answers "what does this
@@ -530,11 +658,11 @@ message ProjectServiceListProjectsResponse {
 // WHAT IT DOES NOT CARRY, stated because the absence is a decision: no caller
 // identity. Resolution today is over ONE global namespace of paths, and no
 // field of this request could change the answer. The private class beneath
-// `local` is what changes that — a private path is owned, and resolving one for
-// the wrong account is ledger 651 — and closing that ruling adds the caller's
-// attested identity here as a new field. It is not declared in advance because
-// a field nothing reads, that LOOKS like an identity, is read later as a
-// verified one (ADR-0534).
+// `local` is what changes who may use a resolved path, and the plan chose to
+// answer that in the gateway, against the loaded set (the owner on
+// `RegisteredPath`, ADR-0947), rather than by sending the caller's identity
+// here. A field nothing reads, that LOOKS like an identity, is read later as a
+// verified one (ADR-0534), so none is declared.
 message ProjectServiceResolveProjectRequest {
   string candidate_path = 1;
 }
@@ -612,6 +740,9 @@ message ProjectServiceSyncProjectsRequest {
   // Relayed unchanged: the STORE applies the guard, because only the store
   // knows how many org-class rows are active under the sync's lock.
   bool allow_mass_archive = 4;
+  // The mass-revoke guard; see `SyncProjectsRequest.allow_mass_revoke`.
+  // Relayed unchanged, for the same reason.
+  bool allow_mass_revoke = 5;
 }
 // The store's counts, relayed unchanged; see `SyncProjectsResponse`.
 message ProjectServiceSyncProjectsResponse {
@@ -620,6 +751,10 @@ message ProjectServiceSyncProjectsResponse {
   uint32 archived = 3;
   uint32 reactivated = 4;
   uint32 unchanged = 5;
+  uint32 grants_declared = 6;
+  uint32 grants_inserted = 7;
+  uint32 grants_deleted = 8;
+  uint32 grants_unchanged = 9;
 }
 
 // The registry's PUBLIC API — what the gateway calls (D4). Holds no store, and
