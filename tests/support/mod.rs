@@ -799,7 +799,37 @@ impl World {
             roots: roots.to_vec(),
             projects: projects.to_vec(),
             allow_mass_archive,
+            allow_mass_revoke: false,
         }
+    }
+
+    /// `SyncProjects` with the mass-revoke guard's flag set as given, and the
+    /// mass-archive guard ON (team access stage 4).
+    pub async fn sync_revoking(
+        &self,
+        roots: &[DeclaredProject],
+        projects: &[DeclaredProject],
+        allow_mass_revoke: bool,
+    ) -> Result<SyncProjectsResponse, Status> {
+        let mut req = self.sync_request(roots, projects, false);
+        req.allow_mass_revoke = allow_mass_revoke;
+        self.db
+            .sync_as(Some(yadgar_project_db::service::SYNC_CALLER), req)
+            .await
+    }
+
+    /// `(path, team_id, level)` for every stored grant, ordered. Read straight
+    /// from the table, so a read path that forgot to fill `Project.grants`
+    /// cannot satisfy an assertion made here.
+    pub async fn grant_rows(&self) -> Vec<(String, String, i8)> {
+        sqlx::query_as(
+            "SELECT p.path, g.team_id, g.level FROM project_grant g
+               JOIN project p ON p.id = g.project_id
+              ORDER BY p.path, g.team_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .expect("grant rows")
     }
 
     /// `(path, status, version, display_name, source_repo)` for every org-class
@@ -835,6 +865,7 @@ pub fn declared(path: &str, display_name: &str, source_repo: &str) -> DeclaredPr
         path: path.into(),
         display_name: display_name.into(),
         source_repo: source_repo.into(),
+        grants: Vec::new(),
     }
 }
 

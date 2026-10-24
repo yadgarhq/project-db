@@ -110,5 +110,9 @@ pub fn row_to_project(row: &sqlx::mysql::MySqlRow) -> Result<Project, Status> {
         status: row.try_get::<i8, _>("status").map_err(internal)? as i32,
         last_seen_at: secs("last_seen_at_secs")?.map(at),
         aliases: Vec::new(),
+        // EMPTY HERE AND FILLED BY THE CALLER, for the reason `aliases` is:
+        // grants live in `project_grant` and are fetched per page by
+        // `crate::read::with_grants`.
+        grants: Vec::new(),
     })
 }
