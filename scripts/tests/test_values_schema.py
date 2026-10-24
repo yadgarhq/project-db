@@ -84,8 +84,8 @@ EXTRAS = frozenset(
 # `required` with a chart default `values.yaml` ships (so none belongs in
 # `REQUIRED_NO_DEFAULT` below), and `required` alone passes a null value
 # through (K-1), so the leaf needs its type too. `acquireTimeoutSeconds`
-# alone also keeps a `maximum`, pinned against the dial's own request
-# deadline by `tests/chart_request_deadline.rs`.
+# alone also keeps a `maximum`, pinned below the dial's lowest request
+# deadline (ADR-1006) by `tests/chart_request_deadline.rs`.
 RETAINED_TYPED_LEAVES = frozenset(
     {
         "database.migrationLockTimeoutSeconds",
