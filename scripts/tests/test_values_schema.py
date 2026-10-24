@@ -86,6 +86,10 @@ EXTRAS = frozenset(
 # through (K-1), so the leaf needs its type too. `acquireTimeoutSeconds`
 # alone also keeps a `maximum`, pinned below the dial's lowest request
 # deadline (ADR-1006) by `tests/chart_request_deadline.rs`.
+# The four `server.limits.*` leaves (ADR-1006, yaadgaar #218) join them: each
+# is `required` with a chart default, typed `integer` with `minimum`/`maximum`
+# equal to the library's `ServerLimits::*` range, pinned by
+# `tests/chart_server_limits.rs`.
 RETAINED_TYPED_LEAVES = frozenset(
     {
         "database.migrationLockTimeoutSeconds",
@@ -93,6 +97,10 @@ RETAINED_TYPED_LEAVES = frozenset(
         "database.idleTimeoutSeconds",
         "database.maxLifetimeSeconds",
         "database.engineOperatorReserve",
+        "server.limits.maxConcurrentStreams",
+        "server.limits.keepaliveIntervalSeconds",
+        "server.limits.keepaliveTimeoutSeconds",
+        "server.limits.maxHeaderListBytes",
     }
 )
 

@@ -16,7 +16,7 @@
 
 use tonic::transport::Server;
 use yadgar_lifecycle::serve_tls::ServeTlsError;
-pub use yadgar_lifecycle::serve_tls::{ClientAuth, ServerTls};
+pub use yadgar_lifecycle::serve_tls::{ClientAuth, ServerLimits, ServerTls};
 // THE ONE ERROR-CHAIN FLATTENER FOR THE ESTATE (ADR-0591).
 use yadgar_telemetry::diagnose::chain;
 
@@ -27,6 +27,24 @@ use super::{BootError, LISTEN};
 /// each refusal's chart key from it, so a refusal names the key an operator
 /// edits in THIS chart.
 pub const TLS_CHART_KEY: &str = "tls";
+
+/// The values block the four server limits render from: `server.limits.*`
+/// (ADR-1006). The crate builds each refusal's chart key from it, so a refusal
+/// names the key an operator edits in THIS chart.
+pub const LIMITS_CHART_KEY: &str = "server.limits";
+
+/// Read the listener's protocol limits through `lookup` (ADR-1006): the stream,
+/// keepalive and header-list bounds. **NOTHING HERE DEFAULTS.**
+/// All four keys are required, and the chart's `server.limits` block supplies
+/// the shipped values. Absence, a non-number or an out-of-range value refuses
+/// the boot naming the variable and the chart key.
+pub fn listener_limits(lookup: impl Fn(&str) -> Option<String>) -> Result<ServerLimits, BootError> {
+    ServerLimits::from_lookup(LISTEN, LIMITS_CHART_KEY, lookup).map_err(|error| {
+        BootError::ListenerLimits {
+            detail: chain(&error),
+        }
+    })
+}
 
 /// Read the listener's transport through `lookup`: `Ok(None)` is the cleartext
 /// listener, and only ever the answer to an explicit `LISTEN_TLS_ENABLED=0`
@@ -52,8 +70,8 @@ pub fn listener_tls(
 /// for TLS and got the mount wrong exits without touching the engine. The
 /// crate's builder is eager: it reads every file, matches the certificate to
 /// its key and builds the client verifier here.
-pub fn server(tls: Option<&ServerTls>) -> Result<Server, BootError> {
-    yadgar_lifecycle::serve_tls::server(tls).map_err(refused)
+pub fn server(tls: Option<&ServerTls>, limits: &ServerLimits) -> Result<Server, BootError> {
+    yadgar_lifecycle::serve_tls::server(tls, limits).map_err(refused)
 }
 
 /// The crate's refusal as this binary's, flattened through [`chain`] for

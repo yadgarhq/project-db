@@ -333,6 +333,22 @@ spec:
             - name: LISTEN_TLS_CLIENT_AUTH
               value: {{ .Values.tls.clientAuth | quote }}
             {{- end }}
+            {{- /*
+            THE LISTENER'S PROTOCOL LIMITS (ADR-1006, yaadgaar #218), RENDERED
+            UNCONDITIONALLY (`int64` BEFORE `quote`: helm decodes a values-file integer as
+            a float64 and `quote` prints 1048576 as 1.048576e+06): the library has no default and the binary refuses an
+            absent, non-numeric or out-of-range value, naming the variable and
+            the `server.limits` key. The schema ranges them and
+            render-checks.yaml holds the keepalive cross-key rule.
+            */}}
+            - name: LISTEN_MAX_CONCURRENT_STREAMS
+              value: {{ .Values.server.limits.maxConcurrentStreams | int64 | quote }}
+            - name: LISTEN_KEEPALIVE_INTERVAL_SECS
+              value: {{ .Values.server.limits.keepaliveIntervalSeconds | int64 | quote }}
+            - name: LISTEN_KEEPALIVE_TIMEOUT_SECS
+              value: {{ .Values.server.limits.keepaliveTimeoutSeconds | int64 | quote }}
+            - name: LISTEN_MAX_HEADER_LIST_BYTES
+              value: {{ .Values.server.limits.maxHeaderListBytes | int64 | quote }}
           volumeMounts:
             # THE CONFIGURATION REPOSITORY'S SHARED CONFIGMAP (ADR-0569,
             # ADR-0570, step 2a): the knobs every service reads.

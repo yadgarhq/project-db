@@ -374,6 +374,38 @@ tls:
   # new authority together carry a CA rotation.
   # clientCaSecretKey: the key inside that Secret holding the bundle.
 
+# THE LISTENER'S PROTOCOL LIMITS (ADR-1006, yaadgaar #218). Max ruled on
+# 2026-10-24 that these are CHART VALUES with stated defaults, not constants:
+# adopters size clusters differently, so the bound belongs where an operator can
+# change it. `yadgar-lifecycle` takes them as parameters and has NO default
+# (ADR-0569, ADR-0705), so each is rendered unconditionally as a `LISTEN_*`
+# variable and the binary refuses to boot, naming the variable and the key
+# here, when one is absent, not a whole number or out of range.
+#
+# THE BLOCK IS `server.limits` BECAUSE THE BINARY NAMES IT: `main` passes that
+# key to `ServerLimits::from_env`, so a refusal reads the key an operator edits.
+# This chart had no `server:` block before; the others (`database`, `tls`) are
+# per-concern, and this one is the listener's.
+#
+# The ranges below are the library's (`ServerLimits::*`), mirrored in
+# `values.schema.json`, and `tests/chart_server_limits.rs` pins both against the
+# library. The one cross-key rule, `keepaliveTimeoutSeconds` strictly below
+# `keepaliveIntervalSeconds`, is a render check in `templates/render-checks.yaml`
+# because a schema cannot compare two keys.
+# Connection age (ADR-1006, 30 min) omitted until tonic#2780 ships; yaadgaar #417.
+server:
+  limits:
+    # Concurrent HTTP/2 streams one connection may open. Range 1..10000.
+    maxConcurrentStreams: 256
+    # How often an idle connection is PINGed. Range 1..3600.
+    keepaliveIntervalSeconds: 30
+    # How long a PING may go unanswered before the connection is closed. Range
+    # 1..600, and strictly below the interval.
+    keepaliveTimeoutSeconds: 10
+    # The largest HTTP/2 header list the server accepts, in bytes. Range
+    # 1024..1048576.
+    maxHeaderListBytes: 16384
+
 # D68: scale on CONCURRENCY, not CPU. A -db waits on MariaDB and a logic service
 # waits on its -db, so both saturate at low CPU — a CPU-driven HPA stays quiet
 # exactly when the system is in trouble.
