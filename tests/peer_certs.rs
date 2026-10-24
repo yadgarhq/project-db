@@ -37,6 +37,22 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
 
 use yadgar_project_db::boot;
 
+/// The chart's shipped `server.limits` (ADR-1006), as the library reads them:
+/// the library has no default, so a test that builds a server states them.
+fn limits() -> boot::ServerLimits {
+    boot::listener_limits(|key| {
+        match key {
+            "LISTEN_MAX_CONCURRENT_STREAMS" => Some("256"),
+            "LISTEN_KEEPALIVE_INTERVAL_SECS" => Some("30"),
+            "LISTEN_KEEPALIVE_TIMEOUT_SECS" => Some("10"),
+            "LISTEN_MAX_HEADER_LIST_BYTES" => Some("16384"),
+            _ => None,
+        }
+        .map(str::to_string)
+    })
+    .expect("the chart's shipped limits are in range")
+}
+
 const SERVED_NAME: &str = "localhost";
 
 /// The header the echo handler answers with: how many certificates the
@@ -156,7 +172,9 @@ async fn a_handler_behind_serve_tls_sees_the_client_chain() {
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port();
-    let router = boot::server(Some(&tls)).unwrap().add_service(Echo);
+    let router = boot::server(Some(&tls), &limits())
+        .unwrap()
+        .add_service(Echo);
     tokio::spawn(async move {
         let _ = router
             .serve_with_incoming(TcpListenerStream::new(listener))

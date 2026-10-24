@@ -162,3 +162,68 @@ fn a_malformed_acquire_timeout_is_refused_naming_itself_the_value_and_the_chart_
         "the operator got the Debug variant, not the sentence: {stderr}"
     );
 }
+
+/// ADR-1006: the four server limits have no compiled-in default, so a full
+/// environment up to and including the listener's transport, MINUS one limit,
+/// refuses the boot naming the variable AND the chart value that renders it.
+/// The sentence is the operator's output, which only a spawned binary proves.
+#[test]
+fn an_absent_server_limit_is_refused_naming_the_variable_and_the_chart_key() {
+    let base = [
+        ("DB_HOST", "engine.example.invalid"),
+        ("DB_PORT", "13306"),
+        ("DB_NAME", "project_fixture"),
+        ("DB_USER", "project_fixture_user"),
+        ("DB_MAX_CONNECTIONS", "4"),
+        ("REPLICAS", "3"),
+        ("DB_ENGINE_MAX_CONNECTIONS", "200"),
+        ("DB_ENGINE_OPERATOR_RESERVE", "5"),
+        ("DB_ACQUIRE_TIMEOUT_SECONDS", "25"),
+        ("DB_IDLE_TIMEOUT_SECONDS", "600"),
+        ("DB_MAX_LIFETIME_SECONDS", "1800"),
+        ("DB_SSL_MODE", "verify-identity"),
+        ("DB_MIGRATION_LOCK_TIMEOUT_SECONDS", "60"),
+        ("LISTEN_TLS_ENABLED", "0"),
+        ("LISTEN_TLS_CLIENT_AUTH", "off"),
+    ];
+    let limits = [
+        (
+            "LISTEN_MAX_CONCURRENT_STREAMS",
+            "server.limits.maxConcurrentStreams",
+            "256",
+        ),
+        (
+            "LISTEN_KEEPALIVE_INTERVAL_SECS",
+            "server.limits.keepaliveIntervalSeconds",
+            "30",
+        ),
+        (
+            "LISTEN_KEEPALIVE_TIMEOUT_SECS",
+            "server.limits.keepaliveTimeoutSeconds",
+            "10",
+        ),
+        (
+            "LISTEN_MAX_HEADER_LIST_BYTES",
+            "server.limits.maxHeaderListBytes",
+            "16384",
+        ),
+    ];
+    for (absent, chart_key, _) in limits {
+        let mut vars = base.to_vec();
+        vars.extend(
+            limits
+                .iter()
+                .filter(|(k, _, _)| *k != absent)
+                .map(|(k, _, v)| (*k, *v)),
+        );
+        let stderr = refusal(&vars);
+        assert!(
+            stderr.contains(absent),
+            "the refusal must name the variable {absent}: {stderr}"
+        );
+        assert!(
+            stderr.contains(chart_key),
+            "the refusal must name the chart key {chart_key}: {stderr}"
+        );
+    }
+}

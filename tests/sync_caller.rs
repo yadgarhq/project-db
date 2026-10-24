@@ -34,6 +34,22 @@ use yadgar_project_db::pb::yadgar::project::v1::{
 };
 use yadgar_project_db::service::ProjectDb;
 
+/// The chart's shipped `server.limits` (ADR-1006), as the library reads them:
+/// the library has no default, so a test that builds a server states them.
+fn limits() -> boot::ServerLimits {
+    boot::listener_limits(|key| {
+        match key {
+            "LISTEN_MAX_CONCURRENT_STREAMS" => Some("256"),
+            "LISTEN_KEEPALIVE_INTERVAL_SECS" => Some("30"),
+            "LISTEN_KEEPALIVE_TIMEOUT_SECS" => Some("10"),
+            "LISTEN_MAX_HEADER_LIST_BYTES" => Some("16384"),
+            _ => None,
+        }
+        .map(str::to_string)
+    })
+    .expect("the chart's shipped limits are in range")
+}
+
 const SERVED_NAME: &str = "localhost";
 
 /// One authority, its serving leaf, and a way to mint named client leaves.
@@ -124,7 +140,7 @@ async fn serve(test: &str, pki: &Pki, db: ProjectDb) -> (u16, [TempPem; 3]) {
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port();
-    let router = boot::server(Some(&tls))
+    let router = boot::server(Some(&tls), &limits())
         .unwrap()
         .add_service(ProjectDbServiceServer::new(db));
     tokio::spawn(async move {

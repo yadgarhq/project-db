@@ -1026,6 +1026,25 @@ pub fn boot_cleartext_env(db_name: &str, password_file: &Path) -> Vec<(String, S
         // B-U5 (ADR-0854): the client-auth mode has no default either, and a
         // cleartext listener can only be `off`.
         ("LISTEN_TLS_CLIENT_AUTH".to_string(), "off".to_string()),
+        // ADR-1006: the four server limits have no default in the library, so
+        // the binary refuses to boot without them. These are the chart's
+        // shipped values (`server.limits` in `chart/values.yaml`).
+        (
+            "LISTEN_MAX_CONCURRENT_STREAMS".to_string(),
+            "256".to_string(),
+        ),
+        (
+            "LISTEN_KEEPALIVE_INTERVAL_SECS".to_string(),
+            "30".to_string(),
+        ),
+        (
+            "LISTEN_KEEPALIVE_TIMEOUT_SECS".to_string(),
+            "10".to_string(),
+        ),
+        (
+            "LISTEN_MAX_HEADER_LIST_BYTES".to_string(),
+            "16384".to_string(),
+        ),
     ]
 }
 
