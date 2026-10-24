@@ -1,6 +1,7 @@
 //! Plan case 10 over REAL handshakes: `SyncProjects` admits `project`'s leaf
 //! (`project-caller`) and refuses every other verifying leaf PERMISSION_DENIED
-//! (ADR-0936, ADR-0938).
+//! (ADR-0936, ADR-0938). `RegisterProject` takes the same gate (ADR-1007), and
+//! its cases are at the end of this file because they need the same authority.
 //!
 //! `tests/sync.rs` proves the check runs before any connection is taken, with
 //! the identity passed in. This proves the other half: the gRPC handler reads
@@ -28,7 +29,9 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use tonic::Code;
 use yadgar_project_db::boot;
 use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbServiceServer;
-use yadgar_project_db::pb::yadgar::project::v1::{SyncProjectsRequest, SyncProjectsResponse};
+use yadgar_project_db::pb::yadgar::project::v1::{
+    RegisterProjectRequest, RegisterProjectResponse, SyncProjectsRequest, SyncProjectsResponse,
+};
 use yadgar_project_db::service::ProjectDb;
 
 const SERVED_NAME: &str = "localhost";
@@ -139,6 +142,45 @@ async fn sync_over_tls(
     identity: Identity,
     req: SyncProjectsRequest,
 ) -> Result<SyncProjectsResponse, tonic::Status> {
+    unary_over_tls(
+        port,
+        pki,
+        identity,
+        req,
+        "/yadgar.project.v1.ProjectDbService/SyncProjects",
+    )
+    .await
+}
+
+/// Dial as the holder of `identity` and send one `RegisterProject`.
+async fn register_over_tls(
+    port: u16,
+    pki: &Pki,
+    identity: Identity,
+    req: RegisterProjectRequest,
+) -> Result<RegisterProjectResponse, tonic::Status> {
+    unary_over_tls(
+        port,
+        pki,
+        identity,
+        req,
+        "/yadgar.project.v1.ProjectDbService/RegisterProject",
+    )
+    .await
+}
+
+/// Dial as the holder of `identity` and send one unary call to `path`.
+async fn unary_over_tls<Req, Resp>(
+    port: u16,
+    pki: &Pki,
+    identity: Identity,
+    req: Req,
+    path: &'static str,
+) -> Result<Resp, tonic::Status>
+where
+    Req: prost::Message + Send + Sync + 'static,
+    Resp: prost::Message + Default + Send + Sync + 'static,
+{
     let channel: Channel = Endpoint::from_shared(format!("https://127.0.0.1:{port}"))
         .unwrap()
         .connect_timeout(Duration::from_secs(10))
@@ -156,7 +198,7 @@ async fn sync_over_tls(
     grpc.ready().await.unwrap();
     grpc.unary(
         tonic::Request::new(req),
-        PathAndQuery::from_static("/yadgar.project.v1.ProjectDbService/SyncProjects"),
+        PathAndQuery::from_static(path),
         tonic_prost::ProstCodec::default(),
     )
     .await
@@ -213,4 +255,131 @@ async fn every_other_verifying_leaf_is_refused_before_the_store() {
         assert_eq!(err.code(), Code::PermissionDenied, "{name}: {err:?}");
         assert!(err.message().contains(name), "{name}: {}", err.message());
     }
+}
+
+// ---------------------------------------------------------------------------
+// RegisterProject (ADR-1007, yaadgaar #216)
+// ---------------------------------------------------------------------------
+
+/// A private path [`U1`] may register: its own account segment.
+fn own_private_path() -> String {
+    format!("local/{U1_SEG}/sync-caller-probe")
+}
+
+/// `project`'s leaf reaches the store, and the row is written.
+///
+/// **THE MUTATION THAT REDS IT:** compare against any other name in
+/// `write::register::admit`.
+#[tokio::test]
+async fn project_s_leaf_is_admitted_and_the_registration_applies() {
+    let w = World::fresh("project_db_register_caller_admitted").await;
+    let pki = Pki::new();
+    let (port, _files) = serve("register-admitted", &pki, ProjectDb::new(w.pool.clone())).await;
+
+    let path = own_private_path();
+    let req = w.registration(&path, "", U1, None, "");
+    let r = register_over_tls(port, &pki, pki.client("project-caller"), req)
+        .await
+        .expect("project-caller is admitted");
+    assert_eq!(r.meta.expect("meta").project_id, path);
+    assert_eq!(w.project_count().await, 1);
+}
+
+/// Every OTHER verifying leaf is refused PERMISSION_DENIED, the seeder's and
+/// the gateway's included. The pool points nowhere: a check that ran after
+/// `begin()` would answer from the pool instead, and a check that ran after
+/// `scope_of` would answer INVALID_ARGUMENT for the absent Scope sent here.
+///
+/// **THE MUTATION THAT REDS IT:** delete the `admit` call in
+/// `write::register::register_as`.
+#[tokio::test]
+async fn every_other_verifying_leaf_is_refused_registration_before_the_store() {
+    let pki = Pki::new();
+    let (port, _files) = serve("register-refused", &pki, ProjectDb::new(nowhere())).await;
+
+    for name in [
+        "gateway-caller",
+        "task-caller",
+        "iam-caller",
+        "seeder-caller",
+    ] {
+        let req = RegisterProjectRequest {
+            idempotency: None,
+            scope: None,
+            path: own_private_path(),
+            display_name: String::new(),
+            source_repo: String::new(),
+        };
+        let err = register_over_tls(port, &pki, pki.client(name), req)
+            .await
+            .expect_err(name);
+        assert_eq!(err.code(), Code::PermissionDenied, "{name}: {err:?}");
+        assert!(err.message().contains(name), "{name}: {}", err.message());
+        assert!(
+            err.message().contains("ADR-1007"),
+            "{name}: {}",
+            err.message()
+        );
+    }
+}
+
+/// A probe registration with no Scope: a check placed after `scope_of` would
+/// answer INVALID_ARGUMENT instead of PERMISSION_DENIED.
+fn probe() -> RegisterProjectRequest {
+    RegisterProjectRequest {
+        idempotency: None,
+        scope: None,
+        path: own_private_path(),
+        display_name: String::new(),
+        source_repo: String::new(),
+    }
+}
+
+/// NO caller at all, through the gRPC HANDLER: a request with no peer chain,
+/// which is what a listener at `clientAuth: "off"` or `optional` hands it. A
+/// `required` listener cannot produce this case over the wire, so it is driven
+/// in-process.
+///
+/// **THE MUTATION THAT REDS IT:** a handler that defaults a missing caller,
+/// `caller.as_deref().or(Some(REGISTER_CALLER))`. A test of `register_as(None)`
+/// alone stays green under that mutation, because it never enters the handler.
+#[tokio::test]
+async fn the_handler_refuses_a_request_with_no_peer_certificate() {
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+
+    let err = ProjectDb::new(nowhere())
+        .register_project(tonic::Request::new(probe()))
+        .await
+        .expect_err("no caller");
+    assert_eq!(err.code(), Code::PermissionDenied, "{err:?}");
+    assert!(err.message().contains("no caller"), "{}", err.message());
+}
+
+/// The comparison is EXACT: no case fold, no trim, and an empty name is no
+/// name. The same table `tests/sync.rs` holds for `SyncProjects`.
+#[tokio::test]
+async fn register_admits_the_exact_name_only() {
+    let db = ProjectDb::new(nowhere());
+    for caller in [
+        None,
+        Some("PROJECT-CALLER"),
+        Some(" project-caller"),
+        Some(""),
+    ] {
+        let err = db.register_as(caller, probe()).await.unwrap_err();
+        assert_eq!(
+            err.code(),
+            Code::PermissionDenied,
+            "{caller:?} must be refused before the pool: {err:?}"
+        );
+    }
+}
+
+/// A pool that points nowhere: any statement fails, so a refusal that came
+/// from the store would not be PERMISSION_DENIED.
+fn nowhere() -> sqlx::MySqlPool {
+    sqlx::mysql::MySqlPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy("mysql://nobody:nothing@127.0.0.1:1/nowhere")
+        .unwrap()
 }

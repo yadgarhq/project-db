@@ -498,3 +498,42 @@ async fn the_reserved_root_is_refused_before_the_idempotency_key_is_spent() {
          performed refuses the caller's next request under it as a differing payload"
     );
 }
+
+/// **NO SERVED WRITE MINTS AN ALIAS (yaadgaar #221).** The gateway walks every
+/// spelling `ListProjects` relays, aliases included. An alias of a private row
+/// spelled outside `local/` would make the gateway answer a stranger
+/// `PROJECT_NOT_MEMBER` at that spelling and an unregistered answer at its
+/// sibling: an oracle on that private row's former path. It stays latent
+/// only while nothing a caller can reach writes `project_alias`, which is
+/// what this pins. Every served write runs here, and the two held-back verbs
+/// are driven too, so the day `RenameProject` returns this test is the one
+/// that says the alias writer now owes the ADR-0954 rule: refuse a private
+/// row's alias outside its owner's `local/<segment>/`.
+///
+/// **THE MUTATION THAT REDS IT:** any served verb that inserts into
+/// `project_alias`.
+#[tokio::test]
+async fn no_served_write_mints_an_alias() {
+    let w = world("project_db_registry_no_alias_writer").await;
+
+    w.sync(
+        &[declared(ROOT, "", FIXTURE_REPO)],
+        &[declared(support::A, "", FIXTURE_REPO)],
+        false,
+    )
+    .await
+    .expect("sync");
+    w.try_register(A, "Alpha").await.expect("register");
+    w.touch(&[A, support::A], 1_700_000_000)
+        .await
+        .expect("touch");
+    let _ = w.rename(A, B, 1).await;
+    let _ = w.archive(A, 1).await;
+    // A second sync that omits the org row archives it, the one other way a
+    // sync changes a row.
+    w.sync(&[declared(ROOT, "", FIXTURE_REPO)], &[], true)
+        .await
+        .expect("sync");
+
+    assert_eq!(w.alias_count().await, 0);
+}

@@ -36,7 +36,8 @@
 //! `RegisterProject` registers a private `local/<account>/...` path only, and
 //! only under the registrant's own segment: `scope.user_id` with
 //! `yadgar:user:` removed, which must be a canonical lowercase uuidv7
-//! (ADR-0954).
+//! (ADR-0954). Like `SyncProjects`, it admits only `project`'s client leaf
+//! (ADR-1007).
 //!
 //! **ADR-0227: an identity is never derived.** A caller supplies a path or the
 //! call is refused. Nothing here trims, lowercases, normalises or invents one,

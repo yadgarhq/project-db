@@ -85,6 +85,11 @@ pub const SERVICE: &str = "project-db";
 /// leaf, as `platform` issues it (`project-client-tls`, ADR-0936).
 pub const SYNC_CALLER: &str = "project-caller";
 
+/// The ONE caller `RegisterProject` admits: the same leaf as [`SYNC_CALLER`]
+/// (ADR-1007). Stated as its own name because the two gates are two rulings,
+/// and a change to one is not a change to the other.
+pub const REGISTER_CALLER: &str = "project-caller";
+
 pub struct ProjectDb {
     pub(crate) pool: MySqlPool,
 }
@@ -98,14 +103,105 @@ impl ProjectDb {
 /// What every handler records. `rows` is the one field that differs, and it is
 /// the one a blanket value gets wrong: the row count for a list is the LIST, not
 /// one, or every page looks like a single-row read.
-fn envelope<T: prost::Message + std::fmt::Debug>(response: &T, rows: u32) -> Outcome {
+fn envelope<T: prost::Message + Rendered>(response: &T, rows: u32) -> Outcome {
     Outcome {
         status: "OK",
-        payload: format!("{response:?}"),
+        payload: response.rendered(),
         encoded_bytes: Some(prost::Message::encoded_len(response) as u64),
         class: Class::Envelope,
         rows,
         ..Default::default()
+    }
+}
+
+/// The text the telemetry crate measures for a response's WORD count: its
+/// paths, ids and counts, and never a user id (yaadgaar #167).
+///
+/// **NOT `{response:?}`.** `Meta` carries three user ids — `owner_user_id`,
+/// `created_by` and `updated_by` — and a Debug rendering of any response that
+/// holds a `Meta` put all three in the payload. The telemetry crate uses the
+/// payload only to count words (bytes come from `encoded_bytes`), so no owner
+/// id from a response reached a record through the payload; but the string is
+/// the one this service hands away, and an id that never enters it cannot leak
+/// through a later telemetry change.
+///
+/// **AN ALLOWLIST, ONE IMPL PER RESPONSE.** A field added to a response later
+/// is not rendered until someone writes it here, so a new user id field fails
+/// closed rather than arriving in the payload by default.
+trait Rendered {
+    fn rendered(&self) -> String;
+}
+
+/// A `Meta` as the payload carries it: the row's id and its path.
+fn meta_words(meta: Option<&crate::pb::yadgar::common::v1::Meta>) -> String {
+    meta.map_or_else(String::new, |m| format!("{} {}", m.id, m.project_id))
+}
+
+/// A `Project` as the payload carries it: its id and its path.
+fn project_words(project: &Project) -> String {
+    let id = project.meta.as_ref().map_or("", |m| m.id.as_str());
+    format!("{id} {}", project.path)
+}
+
+impl Rendered for RegisterProjectResponse {
+    fn rendered(&self) -> String {
+        meta_words(self.meta.as_ref())
+    }
+}
+
+impl Rendered for RenameProjectResponse {
+    fn rendered(&self) -> String {
+        meta_words(self.meta.as_ref())
+    }
+}
+
+impl Rendered for ArchiveProjectResponse {
+    fn rendered(&self) -> String {
+        meta_words(self.meta.as_ref())
+    }
+}
+
+impl Rendered for GetProjectResponse {
+    fn rendered(&self) -> String {
+        self.project
+            .as_ref()
+            .map_or_else(String::new, project_words)
+    }
+}
+
+impl Rendered for ListProjectsResponse {
+    fn rendered(&self) -> String {
+        self.projects
+            .iter()
+            .map(project_words)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+impl Rendered for ResolveProjectResponse {
+    fn rendered(&self) -> String {
+        format!(
+            "{} exact={} via_alias={} status={} {}",
+            self.resolved_path, self.exact, self.via_alias, self.status, self.source_repo
+        )
+    }
+}
+
+impl Rendered for SyncProjectsResponse {
+    fn rendered(&self) -> String {
+        format!(
+            "inserted={} updated={} archived={} reactivated={} unchanged={}",
+            self.inserted, self.updated, self.archived, self.reactivated, self.unchanged
+        )
+    }
+}
+
+impl Rendered for TouchProjectsResponse {
+    /// Empty on the wire; one word, as its Debug rendering was, so the record
+    /// keeps a token estimate rather than losing the field.
+    fn rendered(&self) -> String {
+        "TouchProjectsResponse".to_string()
     }
 }
 
@@ -115,6 +211,9 @@ impl ProjectDbService for ProjectDb {
         &self,
         request: Request<RegisterProjectRequest>,
     ) -> Result<Response<RegisterProjectResponse>, Status> {
+        // READ BEFORE THE REQUEST IS CONSUMED, as in `sync_projects`: the peer
+        // chain lives on the request's extensions, and `into_inner` drops them.
+        let caller = caller_common_name(&request);
         let request_id = request_id_of(&request);
         let req = request.into_inner();
         let call = Call::start(
@@ -125,7 +224,7 @@ impl ProjectDbService for ProjectDb {
         );
 
         call.run(
-            async move { self.register(req).await },
+            async move { self.register_as(caller.as_deref(), req).await },
             |r| envelope(r, 1),
             status_name,
         )
@@ -300,3 +399,6 @@ impl ProjectDbService for ProjectDb {
         .map(Response::new)
     }
 }
+
+#[cfg(test)]
+mod tests;
