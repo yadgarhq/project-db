@@ -220,7 +220,7 @@ async fn serve(
     // The BINARY installs the exporter, never the library — a library that
     // installs one picks the backend for every service linking it. A failure here
     // is logged and ignored: a service that cannot export metrics should still
-    // serve traffic, which is D25's rule applied to the metrics path too.
+    // serve traffic, which is D67's rule applied to the metrics path too.
     // NAMED ON FAILURE (ledger 1257), through `boot::parse_listen_addr` —
     // the one function `src/boot/tests.rs` can prove the naming survives, a
     // bare `?` here turning the address into an unnamed `AddrParseError`
