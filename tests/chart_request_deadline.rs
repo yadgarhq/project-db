@@ -3,26 +3,34 @@
 //! `database.acquireTimeoutSeconds` bounds how long `store`'s pool waits for a
 //! free connection (ledger C-DB2, ADR-0837). This module has no dial of its
 //! own — it is a `-db` twin, never a dialler — but every caller that reaches it
-//! over gRPC dials through `yadgar-dial`, whose own `REQUEST_TIMEOUT` is the
-//! WHOLE of a caller's request budget. If this pool's acquire timeout could
+//! over gRPC dials through `yadgar-dial`, whose request timeout is the WHOLE
+//! of a caller's request budget, and is never below `min_request_timeout()`. If this pool's acquire timeout could
 //! reach or exceed that budget, the acquire would never be the error a caller
 //! sees FIRST: the caller's own timeout would fire first, or at the same
 //! instant, and the operator reading it would learn nothing about which layer
 //! actually ran out of room.
 //!
+//! **ADR-1006 RETARGETED THE BOUND (2026-10-24).** The timeout chain shrinks
+//! inward: each hop's timeout is strictly below its caller's. The caller's
+//! request timeout is now a chart value in the CALLER's chart (ADR-0925 Q-C1,
+//! ADR-1006 default 14s), which this chart cannot read. What it can read is the lowest
+//! value the caller's dial client accepts, `yadgar_dial::min_request_timeout()`
+//! (14s). A bound below that floor is below every caller's deadline, so the
+//! schema maximum is 13 and the shipped value 12.
+//!
 //! **EVERY NUMBER IS PINNED BY A LITERAL (ADR-0599), THE SAME DISCIPLINE
 //! `gateway`'s `chart_grace_period.rs` HOLDS.** A bound another component's
 //! configuration must respect is asserted against the literal, never only
-//! through the constant that carries it. So `chart/values.schema.json`'s `29`
-//! and `chart/values.yaml`'s `25` are read out of the files and checked against
-//! literals, `yadgar_dial::default_request_timeout()` is checked against `30`,
+//! through the constant that carries it. So `chart/values.schema.json`'s `13`
+//! and `chart/values.yaml`'s `12` are read out of the files and checked against
+//! literals, `yadgar_dial::min_request_timeout()` is checked against `14`,
 //! and the three-way relation is asserted last as what must survive a
 //! deliberate change to any of them.
 //!
 //! **THIS TEST REDS WHEN THIS MODULE BUMPS ITS `yadgar-dial` PIN, not when
 //! somebody edits `dial`'s `main`.** That is the correct moment: the chart
 //! must agree with the DIALLER EVERY CALLER ACTUALLY LINKS, and `dial` cannot
-//! hold this check itself — its own `REQUEST_TIMEOUT` doc says so, because the
+//! hold this check itself — its own request-timeout doc says so, because the
 //! `-db` charts live in seven other repositories it cannot read.
 //!
 //! `yadgar-dial` is a DEV-ONLY dependency here: nothing this binary ships
@@ -115,22 +123,22 @@ fn schema_maximum(leaf: &str) -> u64 {
 fn the_acquire_timeout_fires_before_a_callers_own_request_deadline() {
     let shipped = database_scalar("acquireTimeoutSeconds");
     let maximum = schema_maximum("acquireTimeoutSeconds");
-    let deadline = yadgar_dial::default_request_timeout().as_secs();
+    let deadline = yadgar_dial::min_request_timeout().as_secs();
 
     assert_eq!(
-        shipped, 25,
+        shipped, 12,
         "chart/values.yaml's shipped database.acquireTimeoutSeconds moved; it is the value \
          every rendered deployment gets today, and the relation below is asserted against it"
     );
     assert_eq!(
-        maximum, 29,
+        maximum, 13,
         "chart/values.schema.json's maximum on database.acquireTimeoutSeconds moved; it exists \
          to stay strictly below the dial's own request deadline"
     );
     assert_eq!(
-        deadline, 30,
-        "yadgar_dial::default_request_timeout() moved; chart/values.schema.json's maximum of \
-         29 on database.acquireTimeoutSeconds was pinned strictly below the OLD value of 30 — \
+        deadline, 14,
+        "yadgar_dial::min_request_timeout() moved; chart/values.schema.json's maximum of \
+         13 on database.acquireTimeoutSeconds was pinned strictly below the OLD value of 14 — \
          re-derive the chart's bound and change both together"
     );
 
@@ -142,7 +150,7 @@ fn the_acquire_timeout_fires_before_a_callers_own_request_deadline() {
     assert!(
         maximum < deadline,
         "database.acquireTimeoutSeconds's maximum ({maximum}) no longer sits strictly below \
-         yadgar_dial::default_request_timeout() ({deadline}s): an operator setting the chart \
+         yadgar_dial::min_request_timeout() ({deadline}s): an operator setting the chart \
          value right up to that maximum would make this pool's own acquire time out at or \
          after the caller's whole request deadline, so a caller never sees which layer actually \
          ran out of room"
