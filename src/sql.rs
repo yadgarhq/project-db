@@ -34,7 +34,7 @@ pub fn scope_of(scope: &Option<Scope>) -> Result<&Scope, Status> {
 ///
 /// Empty strings when the scope is absent: a write is refused on its own
 /// merits, a read proceeds, and telemetry must never be the thing that fails a
-/// request (D25).
+/// request (D67).
 ///
 /// **`request_id` FALLS BACK TO THE HEADER WHEN THE `Scope` CARRIES NONE**
 /// (ledger 1254). `header` is [`request_id_of`]'s read of
@@ -86,7 +86,7 @@ fn capped(s: &str) -> std::borrow::Cow<'_, str> {
 /// 1254). Read BEFORE the request is consumed: `into_inner` drops the metadata.
 ///
 /// Capped rather than refused, and an absent or unreadable value is `""`,
-/// because a correlation id must never fail a call (D25). A header is bounded
+/// because a correlation id must never fail a call (D67). A header is bounded
 /// only by the transport, and this `String` reaches the `CallRecord`.
 pub fn request_id_of<T>(req: &tonic::Request<T>) -> String {
     req.metadata()

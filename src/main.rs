@@ -122,7 +122,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // client-auth mode is read and, for `optional`/`required`, the client CA
     // is parsed here too.
     let tls = boot::listener_tls(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
-    let server = boot::server(tls.as_ref()).map_err(|e| e.to_string())?;
+    // THE LISTENER'S PROTOCOL LIMITS (ADR-1006): streams, keepalive, connection
+    // age, header list. Read beside the transport and refused the same way; the
+    // library has no default, the chart's `server.limits` block supplies them.
+    let limits = boot::listener_limits(|key| std::env::var(key).ok()).map_err(|e| e.to_string())?;
+    let server = boot::server(tls.as_ref(), &limits).map_err(|e| e.to_string())?;
 
     // The credential never arrives as an environment variable — it is a mounted
     // Secret the operator issued (D58), read through the seam so this module has
@@ -216,7 +220,7 @@ async fn serve(
     // The BINARY installs the exporter, never the library — a library that
     // installs one picks the backend for every service linking it. A failure here
     // is logged and ignored: a service that cannot export metrics should still
-    // serve traffic, which is D25's rule applied to the metrics path too.
+    // serve traffic, which is D67's rule applied to the metrics path too.
     // NAMED ON FAILURE (ledger 1257), through `boot::parse_listen_addr` —
     // the one function `src/boot/tests.rs` can prove the naming survives, a
     // bare `?` here turning the address into an unnamed `AddrParseError`
@@ -294,7 +298,17 @@ async fn serve(
     };
 
     match drain_within(serving, ask_to_stop, stop, DRAIN_BUDGET).await {
-        Drain::Finished(result) => result?,
+        // NAMED, not a bare `?`. `serve_with_shutdown`'s error is
+        // `tonic::transport::Error`, whose whole `Display` is the two words
+        // "transport error": the bind collision sits one `source()` hop down.
+        // Without the address and the OS reason an operator reading a
+        // CrashLoopBackOff learns neither (yaadgaar #313).
+        Drain::Finished(result) => result.map_err(|e| {
+            format!(
+                "the gRPC server on LISTEN={addr} stopped with an error: {}",
+                yadgar_telemetry::diagnose::chain(&e)
+            )
+        })?,
         // EXIT 0 ANYWAY. The restart is the point; a drain that overran is worth
         // an error in the log, not a CrashLoopBackOff on top of it.
         Drain::Overran => tracing::error!(

@@ -10,7 +10,7 @@ description = "The project module's -db twin: the registry of projects, serving 
 # Pinned by RELEASE TAG, not by branch — a published tag never moves in this
 # organisation, so `v0.2.0` names exactly one commit for as long as it exists
 # (the same reasoning that pins images by digest (D61) and actions by SHA (D62)).
-yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.4.0" }
+yadgar-store = { git = "https://github.com/yadgarhq/store.git", tag = "v0.6.0" }
 # In tonic 0.14 prost codegen moved out to tonic-prost; there is no "prost"
 # feature on tonic itself.
 tonic = { version = "0.14", default-features = false, features = [
@@ -58,7 +58,16 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # `serve_tls::caller_common_name` (lifecycle#31) is what `SyncProjects` reads
 # its caller's identity with (ADR-0936), so `project` and this store parse a
 # client leaf one way.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.2.23", features = ["serve-tls"] }
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.3.0", features = ["serve-tls"] }
+# THE CALLER'S DEADLINE (ADR-1019, yaadgaar #337). `Deadline::of` reads the
+# incoming `grpc-timeout`, and every pool acquire is bounded by what is left of
+# it, so this store answers DEADLINE_EXCEEDED itself instead of waiting out the
+# chart's acquire ceiling for a caller that has already given up. A RUNTIME
+# dependency since v0.2.25 — before it, only `tests/chart_request_deadline.rs`
+# read this crate, for `min_request_timeout()`. This binary still dials
+# nothing; it links the crate for its deadline reader. TAG-PINNED, like every
+# in-org crate. No feature flag: the crate declares no `[features]` table.
+yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.25" }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
@@ -98,16 +107,6 @@ tokio-stream = { version = "0.1", features = ["net"] }
 # repository is a secret in the repository, and it expires on a date nobody is
 # watching.
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
-# `tests/chart_request_deadline.rs` pins `database.acquireTimeoutSeconds`'s
-# schema bound against the caller's own request deadline, so the two cannot
-# drift apart silently (ledger C-DB2, ADR-0837, M-audit-C). TAG-PINNED, like
-# every in-org crate; DEV-ONLY, because nothing this binary SHIPS dials
-# anything — it is read from by a `-db` twin, never a dialler. No feature
-# flag: this crate declares no `[features]` table at all, so there is none to
-# pick. v0.2.20, the tag the callers move to in gateway#114 / iam#104 /
-# task#80 / project#34 (ledger 1353 keeps this dev-only reader in step with
-# them).
-yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.20" }
 # For the SAME test: `chart/values.schema.json` is JSON, and parsing its
 # `database.acquireTimeoutSeconds.maximum` by hand is the fragile string-
 # scanning this format does not need. Already in this tree transitively

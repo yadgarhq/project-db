@@ -114,7 +114,17 @@ database:
   # MariaDB's number; RDS derives max_connections from instance size, and a
   # small instance is well under it. On an engine with a smaller ceiling the
   # pod could not start and the operator had no value to change.
-  maxConnections: 8
+  #
+  # 3 PER REPLICA (ADR-1006). The engine is not the only cap: MariaDB also
+  # limits each ACCOUNT, and mariadb-operator writes `maxUserConnections: 20`
+  # on the user it creates for `database.user` (measured live on kind-yadgar,
+  # 2026-10-24; the MariaDB CRD has no knob for it). 3 x 6 (`autoscaling.maxReplicas`)
+  # = 18 fits; the old 8 x 6 = 48 did not, and `store` now refuses that at boot
+  # (`PoolError::WouldExceedUserCap`). Raising this or the replica ceiling needs
+  # the account's limit raised first — a chart-owned User CR is the follow-up.
+  # NOT YET SAFE MID-ROLL: a roll at the KEDA ceiling with `maxSurge: 1` runs
+  # 7 pods x 3 = 21, over 20 (tracked in yaadgaar #411).
+  maxConnections: 3
   engineMaxConnections: 151
 
   # THE FOUR POOL-SIZING KNOBS `yadgar-store` v0.4.0 stopped compiling in
@@ -132,20 +142,18 @@ database:
   engineOperatorReserve: 5
 
   # HOW LONG `acquire` WAITS FOR A FREE CONNECTION before failing, in
-  # seconds. THIS ONE IS A BEHAVIOUR CHANGE, not a relocation: `store`
-  # v0.3.0 never set it, so every pod ran on sqlx's own default of 30s —
-  # equal to the caller's whole request deadline
-  # (`yadgar_dial::default_request_timeout`), which meant this pool could
-  # never surface as the FIRST error. 25s leaves 5s of margin below that
-  # deadline, which `tests/chart_request_deadline.rs` pins. `gateway`'s
-  # `AUTH_DEADLINE` (10s) and `RESOLVE_DEADLINE` (5s) bound only its calls
-  # to `iam`; they are not on this module's path.
+  # seconds. ADR-1006: the timeout chain shrinks inward, each hop strictly
+  # below its caller. The caller's dial request timeout is a value in the
+  # CALLER's chart (ADR-1006 default 14s) that this chart cannot read; 14s is also the
+  # lowest that client accepts (`yadgar_dial::min_request_timeout`). An
+  # acquire at or above it could never surface as the FIRST error. 12s
+  # leaves 2s of margin, which `tests/chart_request_deadline.rs` pins.
   #
-  # THE BOUND IS 1..29, and chart/values.schema.json is its one source:
+  # THE BOUND IS 1..13, and chart/values.schema.json is its one source:
   # minimum 1, same reasoning as the migration lock's below (an acquire of
-  # zero or less never waits); maximum 29, strictly below the dial's 30s so
-  # a caller's own timeout is never the one that fires first.
-  acquireTimeoutSeconds: 25
+  # zero or less never waits); maximum 13, strictly below the dial's 14s
+  # floor so a caller's own timeout is never the one that fires first.
+  acquireTimeoutSeconds: 12
 
   # HOW LONG AN IDLE CONNECTION IS KEPT before the pool closes it, in
   # seconds. Replaces sqlx's own default of 600s with the SAME number
@@ -365,6 +373,38 @@ tls:
   # without it. Every certificate in the bundle is an anchor, so an old and a
   # new authority together carry a CA rotation.
   # clientCaSecretKey: the key inside that Secret holding the bundle.
+
+# THE LISTENER'S PROTOCOL LIMITS (ADR-1006, yaadgaar #218). Max ruled on
+# 2026-10-24 that these are CHART VALUES with stated defaults, not constants:
+# adopters size clusters differently, so the bound belongs where an operator can
+# change it. `yadgar-lifecycle` takes them as parameters and has NO default
+# (ADR-0569, ADR-0705), so each is rendered unconditionally as a `LISTEN_*`
+# variable and the binary refuses to boot, naming the variable and the key
+# here, when one is absent, not a whole number or out of range.
+#
+# THE BLOCK IS `server.limits` BECAUSE THE BINARY NAMES IT: `main` passes that
+# key to `ServerLimits::from_env`, so a refusal reads the key an operator edits.
+# This chart had no `server:` block before; the others (`database`, `tls`) are
+# per-concern, and this one is the listener's.
+#
+# The ranges below are the library's (`ServerLimits::*`), mirrored in
+# `values.schema.json`, and `tests/chart_server_limits.rs` pins both against the
+# library. The one cross-key rule, `keepaliveTimeoutSeconds` strictly below
+# `keepaliveIntervalSeconds`, is a render check in `templates/render-checks.yaml`
+# because a schema cannot compare two keys.
+# Connection age (ADR-1006, 30 min) omitted until tonic#2780 ships; yaadgaar #417.
+server:
+  limits:
+    # Concurrent HTTP/2 streams one connection may open. Range 1..10000.
+    maxConcurrentStreams: 256
+    # How often an idle connection is PINGed. Range 1..3600.
+    keepaliveIntervalSeconds: 30
+    # How long a PING may go unanswered before the connection is closed. Range
+    # 1..600, and strictly below the interval.
+    keepaliveTimeoutSeconds: 10
+    # The largest HTTP/2 header list the server accepts, in bytes. Range
+    # 1024..1048576.
+    maxHeaderListBytes: 16384
 
 # D68: scale on CONCURRENCY, not CPU. A -db waits on MariaDB and a logic service
 # waits on its -db, so both saturate at low CPU — a CPU-driven HPA stays quiet

@@ -319,9 +319,13 @@ async fn a_sync_without_a_scope_or_a_principal_is_refused() {
     let mut req = w.sync_request(&[root()], &[], false);
     req.scope = None;
     let err =
-        w.db.sync_as(Some(yadgar_project_db::service::SYNC_CALLER), req)
-            .await
-            .unwrap_err();
+        w.db.sync_as(
+            Some(yadgar_project_db::service::SYNC_CALLER),
+            req,
+            yadgar_dial::Deadline::none(),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
     // NO GATEWAY ON THIS PATH (ADR-0942): the refusal must not tell the
     // caller a gateway attests the Scope it was supposed to build.
@@ -334,9 +338,13 @@ async fn a_sync_without_a_scope_or_a_principal_is_refused() {
     let mut req = w.sync_request(&[root()], &[], false);
     req.scope.as_mut().unwrap().user_id = String::new();
     let err =
-        w.db.sync_as(Some(yadgar_project_db::service::SYNC_CALLER), req)
-            .await
-            .unwrap_err();
+        w.db.sync_as(
+            Some(yadgar_project_db::service::SYNC_CALLER),
+            req,
+            yadgar_dial::Deadline::none(),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
     assert!(err.message().contains("user_id"), "{}", err.message());
     assert_eq!(w.project_count().await, 0);
@@ -417,6 +425,7 @@ async fn a_caller_that_is_not_project_is_refused_before_any_connection() {
         roots: vec![declared(w, "", REPO)],
         projects: vec![],
         allow_mass_archive: false,
+        allow_mass_revoke: false,
     };
     for caller in [
         None,
@@ -426,7 +435,10 @@ async fn a_caller_that_is_not_project_is_refused_before_any_connection() {
         Some("PROJECT-CALLER"),
         Some(""),
     ] {
-        let err = db.sync_as(caller, req(R)).await.unwrap_err();
+        let err = db
+            .sync_as(caller, req(R), yadgar_dial::Deadline::none())
+            .await
+            .unwrap_err();
         assert_eq!(
             err.code(),
             Code::PermissionDenied,

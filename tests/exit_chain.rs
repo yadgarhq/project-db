@@ -1,6 +1,12 @@
 //! THE EXIT CHAIN, held at the binary (ledger 748): the two ways a running
 //! `project-db` is asked to stop both end in a drain and exit code 0.
 //!
+//! **IN-FLIGHT CANARY.** This file does not see an in-flight call finishing.
+//! The one binary test that holds a call across SIGTERM and asserts the caller
+//! gets its answer is `yadgarhq/task`'s `sigterm_lets_an_in_flight_call_finish`
+//! (task#87, merged; yaadgaar #318). It is the single canary, and it is not
+//! copied here.
+//!
 //! The library tests prove the parts — `yadgar-lifecycle` that a signal
 //! resolves `shutdown()` and that a changed file resolves `rotate::watch`,
 //! `tests/assembly.rs` that the watch set holds the right files. None of
@@ -127,6 +133,61 @@ async fn a_rewritten_shared_document_drains_and_exits_zero() {
         Some(0),
         "a rotation is not an error; it must drain and exit 0 ({})",
         describe(Some(status))
+    );
+}
+
+/// Case (iii): a bind failure ends the process by itself, non-zero, naming the
+/// address (yaadgaar #313).
+///
+/// tonic binds INSIDE the spawned serving task, after every env read and the
+/// migration have succeeded, so a `LISTEN` another socket already holds fails
+/// there. `yadgar_lifecycle::drain_within` used to await the stop request FIRST,
+/// so the failure sat unread and the pod stayed up serving nothing until
+/// kubelet's SIGTERM. Now the drain returns the moment the server ends on its
+/// own, and `main::serve` carries `LISTEN=<addr>` and the OS reason out.
+///
+/// **THIS TEST SENDS NO SIGNAL.** Supplying SIGTERM would hide the defect: the
+/// process would exit either way.
+///
+/// The holder lives in this process, not in a second `unshare` child: `unshare
+/// -rm` isolates the mount namespace only, so a plain `TcpListener` here
+/// collides with the child exactly as a second pod on the same node would.
+#[tokio::test]
+async fn a_bind_failure_exits_non_zero_on_its_own_naming_the_listen_address() {
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port to hold");
+    let listen = holder.local_addr().expect("a bound address").to_string();
+
+    let root = tempfile_dir("bind");
+    let mut env = cleartext_env("bind", &root).await;
+    env.retain(|(key, _)| key != "LISTEN");
+    env.push(("LISTEN".to_string(), listen.clone()));
+    let mut project_db = Booted::start(&env);
+    // Logged before the server task is spawned, so it appears whether or not
+    // the bind that follows succeeds.
+    project_db.wait_until_listening();
+
+    let status = project_db.wait_for_exit("on its own after the bind failed", MARGIN);
+    drop(holder);
+
+    assert_eq!(
+        status.signal(),
+        None,
+        "the process must end by itself, not by a signal ({})",
+        describe(Some(status))
+    );
+    assert!(
+        matches!(status.code(), Some(code) if code != 0),
+        "a bind failure must exit non-zero ({})",
+        describe(Some(status))
+    );
+    let seen = project_db.seen().join("\n");
+    assert!(
+        seen.contains(&format!("LISTEN={listen}")),
+        "the refusal must name the LISTEN address: {seen}"
+    );
+    assert!(
+        seen.contains("Address already in use"),
+        "the refusal must carry the OS reason, not tonic's two-word `transport error`: {seen}"
     );
 }
 

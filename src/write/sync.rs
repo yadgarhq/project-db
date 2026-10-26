@@ -18,7 +18,19 @@
 //! 5. **The alias rule**, the one `register` applies: nothing lands at a path
 //!    that is a former path of something else.
 //! 6. **The mass-archive guard** (ADR-0939), decided before a single write.
-//! 7. **The writes**, then the commit.
+//! 7. **The mass-revoke guard** (ADR-0963 (6)), over the stored grant rows read
+//!    after the same lock, also before a single write.
+//! 8. **The writes** — rows, then each declared row's grant set replaced and
+//!    the grants of every undeclared row deleted — then the commit.
+//!
+//! # Grants (team access stage 4)
+//!
+//! A grant is (row, team, level). The declaration states each row's OWN set,
+//! and the store converges to it: a declared pair not stored is inserted, a
+//! stored pair not declared is deleted (every grant of an archived row
+//! included), and a kept pair whose level changed is rewritten in place. A
+//! grant change never bumps the row's `version` and never moves the row
+//! between the five row counts.
 //!
 //! # Case
 //!
@@ -42,10 +54,13 @@ use std::collections::{HashMap, HashSet};
 
 use sqlx::{MySql, Transaction};
 use tonic::Status;
+use yadgar_dial::Deadline;
 
+use super::grants;
 use crate::path;
 use crate::pb::yadgar::common::v1::Visibility;
 use crate::pb::yadgar::project::v1::*;
+use crate::pooled::Pooled;
 use crate::service::{ProjectDb, SYNC_CALLER};
 use crate::sql::{holes, internal};
 
@@ -69,6 +84,7 @@ impl ProjectDb {
         &self,
         caller: Option<&str>,
         req: SyncProjectsRequest,
+        deadline: Deadline,
     ) -> Result<SyncProjectsResponse, Status> {
         admit(caller)?;
         // NOT `sql::scope_of`, whose refusal says a Scope "is attested by the
@@ -83,8 +99,13 @@ impl ProjectDb {
         let actor = principal(&scope.user_id)?;
         let declared = validate(&req)?;
 
-        let mut tx = self.pool.begin().await.map_err(internal)?;
-        match apply(&mut tx, &declared, actor, req.allow_mass_archive).await {
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
+        let mut tx = conn.begin().await?;
+        let guards = Guards {
+            allow_mass_archive: req.allow_mass_archive,
+            allow_mass_revoke: req.allow_mass_revoke,
+        };
+        match apply(&mut tx, &declared, actor, guards).await {
             Ok(response) => {
                 tx.commit().await.map_err(internal)?;
                 Ok(response)
@@ -124,12 +145,22 @@ fn principal(user_id: &str) -> Result<&str, Status> {
     Ok(user_id)
 }
 
+/// The two guards' flags, false meaning the guard is ON.
+#[derive(Clone, Copy)]
+struct Guards {
+    allow_mass_archive: bool,
+    allow_mass_revoke: bool,
+}
+
 /// One declared row, after validation, with its case-folded key.
-struct Declared<'a> {
-    key: String,
+pub(super) struct Declared<'a> {
+    pub(super) key: String,
     path: &'a str,
     display_name: &'a str,
     source_repo: &'a str,
+    /// `(team_id, level)`, validated: a known level, a well-formed id, each
+    /// team at most once.
+    pub(super) grants: Vec<(&'a str, i8)>,
 }
 
 /// Plan step 2: the whole request, or nothing.
@@ -205,6 +236,7 @@ fn row<'a>(what: &'static str, d: &'a DeclaredProject) -> Result<Declared<'a>, S
         path: &d.path,
         display_name: &d.display_name,
         source_repo: &d.source_repo,
+        grants: grants::validate(d)?,
     })
 }
 
@@ -234,12 +266,12 @@ struct Stored {
     status: i8,
 }
 
-/// Plan steps 3 to 7, inside the caller's transaction.
+/// Plan steps 3 to 8, inside the caller's transaction.
 async fn apply(
     tx: &mut Transaction<'_, MySql>,
     declared: &[Declared<'_>],
     actor: &str,
-    allow_mass_archive: bool,
+    guards: Guards,
 ) -> Result<SyncProjectsResponse, Status> {
     sqlx::query("SELECT id FROM project_sync_lock WHERE id = 1 FOR UPDATE")
         .fetch_one(&mut **tx)
@@ -267,14 +299,30 @@ async fn apply(
         .map(|s| s.id.as_str())
         .collect();
     let active_count = stored.iter().filter(|s| s.status == active).count();
-    guard(to_archive.len(), active_count, allow_mass_archive)?;
+    guard(to_archive.len(), active_count, guards.allow_mass_archive)?;
+
+    let stored_grants = grants::stored(tx).await?;
+    let plan = grants::plan(declared, &stored_grants);
+    grants::revoke_guard(
+        plan.deletes.len(),
+        stored_grants.len(),
+        guards.allow_mass_revoke,
+    )?;
 
     let mut response = SyncProjectsResponse::default();
+    let mut ids: HashMap<&str, String> = HashMap::with_capacity(declared.len());
     for d in declared {
-        write_one(tx, d, by_key.get(&d.key).copied(), actor, &mut response).await?;
+        let id = write_one(tx, d, by_key.get(&d.key).copied(), actor, &mut response).await?;
+        ids.insert(d.key.as_str(), id);
     }
     archive(tx, &to_archive, actor).await?;
     response.archived = to_archive.len() as u32;
+
+    grants::write(tx, &plan, &ids).await?;
+    response.grants_declared = declared.iter().map(|d| d.grants.len() as u32).sum();
+    response.grants_inserted = plan.inserts.len() as u32;
+    response.grants_deleted = plan.deletes.len() as u32;
+    response.grants_unchanged = plan.unchanged;
     Ok(response)
 }
 
@@ -322,24 +370,25 @@ fn guard(archiving: usize, active: usize, allowed: bool) -> Result<(), Status> {
 }
 
 /// Insert, overwrite, reactivate, or leave one declared row — and count it.
+/// Answers the row's id, which its grants are written against.
 async fn write_one(
     tx: &mut Transaction<'_, MySql>,
     d: &Declared<'_>,
     stored: Option<&Stored>,
     actor: &str,
     response: &mut SyncProjectsResponse,
-) -> Result<(), Status> {
+) -> Result<String, Status> {
     let Some(stored) = stored else {
-        insert(tx, d, actor).await?;
+        let id = insert(tx, d, actor).await?;
         response.inserted += 1;
-        return Ok(());
+        return Ok(id);
     };
     let differs = stored.display_name != d.display_name
         || stored.source_repo.as_deref() != Some(d.source_repo);
     let reactivating = stored.status != ProjectStatus::Active as i8;
     if !differs && !reactivating {
         response.unchanged += 1;
-        return Ok(());
+        return Ok(stored.id.clone());
     }
     // ONE STATEMENT FOR BOTH: a reactivated row is overwritten too if it also
     // differed, and counts once — as reactivated.
@@ -362,14 +411,14 @@ async fn write_one(
     } else {
         response.updated += 1;
     }
-    Ok(())
+    Ok(stored.id.clone())
 }
 
 async fn insert(
     tx: &mut Transaction<'_, MySql>,
     d: &Declared<'_>,
     actor: &str,
-) -> Result<(), Status> {
+) -> Result<String, Status> {
     // UUIDv7 in a URN, as `register` mints one (D42).
     let id = format!("yadgar:project:{}", uuid::Uuid::now_v7());
     sqlx::query(
@@ -389,7 +438,7 @@ async fn insert(
     .execute(&mut **tx)
     .await
     .map_err(internal)?;
-    Ok(())
+    Ok(id)
 }
 
 /// A STATUS FLIP, NEVER A DELETE (ADR-0934). The row, its aliases and every

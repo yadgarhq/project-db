@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "yadgar/project-db",
-  "$comment": "Closure is per chart (ADR-0850): this file closes only project-db's own key set, at root and in every block it declares; it bounds no other chart. OPEN (untyped {} maps, any shape passes): `global`, the one key the parent forwards into every module; `resources` and `database.instance.resources`, handed to `toYaml` for the pod's and the engine's own resource shape; `rollingUpdate`, handed to `with` for the Deployment's own strategy shape. EXTRAS (a template reads these, `values.yaml` does not declare them, so they are listed as leaves inside their closed block rather than left open): `image.digest`, read by `templates/deployment.yaml` and rewritten with the released digest by ci-release at package time (D65); `networkPolicy.scrapeFrom.namespace`, read by `templates/networkpolicy.yaml` (`values.yaml` ships `scrapeFrom: {}`, so without this extra the whole block would stay an open map); `tls.clientCaSecret` and `tls.clientCaSecretKey` (B-U5E expand, folded into C-DB1: a template reads them only when a client CA is named). TYPES, TOGGLES AND `required` ARE A RENDER CHECK'S JOB (ADR-0847), not this file's: `templates/render-checks.yaml` already refuses a non-bool `autoscaling.enabled`, a non-bool `database.create` and a non-map `autoscaling`, by name, and this schema adds nothing on top of those checks. The exceptions. `database.migrationLockTimeoutSeconds` (ledger 814, ADR-0837) keeps its `type: integer, minimum 1, maximum 590`, shipped before ledger 990 and unrelated to it. `database.acquireTimeoutSeconds`, `database.idleTimeoutSeconds`, `database.maxLifetimeSeconds` and `database.engineOperatorReserve` (ledger C-DB2, ADR-0837, ADR-0849) each keep `type: integer, minimum 1`; `acquireTimeoutSeconds` alone also keeps `maximum 29`, pinned below the dial's 30s request deadline by `tests/chart_request_deadline.rs`. `database` keeps `type: object` and `required` naming all five — a required key with a chart default needs no parent-chart or argocd change before a pin (K-8): the module's own `values.yaml` default already satisfies it everywhere, which is why `migrationLockTimeoutSeconds` needed none either. `tls.enabled` (ledger 1278, ADR-0845, C-DB1) keeps `type: boolean` and `tls` keeps `required: [enabled]`: `required` alone passes a null value, so the leaf needs its type too (K-1) — the render check in `templates/render-checks.yaml` still carries the `hasKey`/`kindIs` guard that produces ADR-0845's own sentence, because a schema refusal and a render-check refusal report differently and both are asserted. `tls.clientAuth` (B-U5, ADR-0854 extending ADR-0845) is in `tls.required` and its leaf stays UNTYPED: the binary refuses an absent `LISTEN_TLS_CLIENT_AUTH`, so the leaf has no chart default and the parent states it (K-8, B-P1), but its type and its three values are the render check's job (ADR-0847) — an `enum` here would pre-empt `templates/render-checks.yaml`'s named sentence for a bare `off`, which YAML reads as false.",
+  "$comment": "Closure is per chart (ADR-0850): this file closes only project-db's own key set, at root and in every block it declares; it bounds no other chart. OPEN (untyped {} maps, any shape passes): `global`, the one key the parent forwards into every module; `resources` and `database.instance.resources`, handed to `toYaml` for the pod's and the engine's own resource shape; `rollingUpdate`, handed to `with` for the Deployment's own strategy shape. EXTRAS (a template reads these, `values.yaml` does not declare them, so they are listed as leaves inside their closed block rather than left open): `image.digest`, read by `templates/deployment.yaml` and rewritten with the released digest by ci-release at package time (D65); `networkPolicy.scrapeFrom.namespace`, read by `templates/networkpolicy.yaml` (`values.yaml` ships `scrapeFrom: {}`, so without this extra the whole block would stay an open map); `tls.clientCaSecret` and `tls.clientCaSecretKey` (B-U5E expand, folded into C-DB1: a template reads them only when a client CA is named). TYPES, TOGGLES AND `required` ARE A RENDER CHECK'S JOB (ADR-0847), not this file's: `templates/render-checks.yaml` already refuses a non-bool `autoscaling.enabled`, a non-bool `database.create` and a non-map `autoscaling`, by name, and this schema adds nothing on top of those checks. The exceptions. `server.limits.*` (ADR-1006, yaadgaar #218; four keys, connection age omitted, yaadgaar #417) keeps `type: integer`, `minimum` and `maximum` equal to yadgar-lifecycle's `ServerLimits::*` ranges, and `server` and `limits` name all four as `required`: the library has no default, `tests/chart_server_limits.rs` pins the ranges against it, and the keepalive timeout-below-interval rule is a render check because a schema cannot compare two keys. `database.migrationLockTimeoutSeconds` (ledger 814, ADR-0837) keeps its `type: integer, minimum 1, maximum 590`, shipped before ledger 990 and unrelated to it. `database.acquireTimeoutSeconds`, `database.idleTimeoutSeconds`, `database.maxLifetimeSeconds` and `database.engineOperatorReserve` (ledger C-DB2, ADR-0837, ADR-0849) each keep `type: integer, minimum 1`; `acquireTimeoutSeconds` alone also keeps `maximum 13`, pinned below the dial's 14s lowest request deadline (ADR-1006) by `tests/chart_request_deadline.rs`. `database` keeps `type: object` and `required` naming all five — a required key with a chart default needs no parent-chart or argocd change before a pin (K-8): the module's own `values.yaml` default already satisfies it everywhere, which is why `migrationLockTimeoutSeconds` needed none either. `tls.enabled` (ledger 1278, ADR-0845, C-DB1) keeps `type: boolean` and `tls` keeps `required: [enabled]`: `required` alone passes a null value, so the leaf needs its type too (K-1) — the render check in `templates/render-checks.yaml` still carries the `hasKey`/`kindIs` guard that produces ADR-0845's own sentence, because a schema refusal and a render-check refusal report differently and both are asserted. `tls.clientAuth` (B-U5, ADR-0854 extending ADR-0845) is in `tls.required` and its leaf stays UNTYPED: the binary refuses an absent `LISTEN_TLS_CLIENT_AUTH`, so the leaf has no chart default and the parent states it (K-8, B-P1), but its type and its three values are the render check's job (ADR-0847) — an `enum` here would pre-empt `templates/render-checks.yaml`'s named sentence for a bare `off`, which YAML reads as false.",
   "properties": {
     "image": {
       "properties": {
@@ -39,8 +39,8 @@
         "acquireTimeoutSeconds": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 29,
-          "description": "Seconds `acquire` waits for a free connection before failing. Rendered as DB_ACQUIRE_TIMEOUT_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero fails every acquire that has to wait (store refuses it at connect). Maximum 29: strictly below yadgar_dial::default_request_timeout()'s 30s, so this pool's own timeout fires before the caller's whole request deadline does; see chart/values.yaml and tests/chart_request_deadline.rs."
+          "maximum": 13,
+          "description": "Seconds `acquire` waits for a free connection before failing. Rendered as DB_ACQUIRE_TIMEOUT_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero fails every acquire that has to wait (store refuses it at connect). Maximum 13 (ADR-1006): strictly below yadgar_dial::min_request_timeout()'s 14s, the lowest request timeout any caller can set, so this pool's own timeout fires before the caller's whole request deadline does; see chart/values.yaml and tests/chart_request_deadline.rs."
         },
         "idleTimeoutSeconds": {
           "type": "integer",
@@ -106,6 +106,49 @@
       "additionalProperties": false,
       "required": ["enabled", "clientAuth"]
     },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limits"],
+      "properties": {
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maxConcurrentStreams",
+            "keepaliveIntervalSeconds",
+            "keepaliveTimeoutSeconds",
+            "maxHeaderListBytes"
+          ],
+          "properties": {
+            "maxConcurrentStreams": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "description": "Concurrent HTTP/2 streams one connection may open. Rendered as LISTEN_MAX_CONCURRENT_STREAMS and read with no fallback (ADR-1006). Range is yadgar-lifecycle's ServerLimits::MAX_CONCURRENT_STREAMS."
+            },
+            "keepaliveIntervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600,
+              "description": "Seconds between keepalive PINGs on an idle connection. Rendered as LISTEN_KEEPALIVE_INTERVAL_SECS (ADR-1006). Range is ServerLimits::KEEPALIVE_INTERVAL_SECS."
+            },
+            "keepaliveTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 600,
+              "description": "Seconds a keepalive PING may go unanswered before the connection closes. Rendered as LISTEN_KEEPALIVE_TIMEOUT_SECS (ADR-1006). Range is ServerLimits::KEEPALIVE_TIMEOUT_SECS; it must also be below keepaliveIntervalSeconds, which templates/render-checks.yaml refuses because a schema cannot compare two keys."
+            },
+            "maxHeaderListBytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 1048576,
+              "description": "Largest HTTP/2 header list the server accepts, in bytes. Rendered as LISTEN_MAX_HEADER_LIST_BYTES (ADR-1006). Range is ServerLimits::MAX_HEADER_LIST_BYTES."
+            }
+          }
+        }
+      }
+    },
     "autoscaling": {
       "properties": {
         "enabled": {},
@@ -149,5 +192,6 @@
     },
     "global": {}
   },
+  "required": ["server"],
   "additionalProperties": false
 }

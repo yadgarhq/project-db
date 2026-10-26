@@ -112,6 +112,12 @@ fn base() -> String {
     }
 }
 
+/// The URL of the fixture database `name`, for a test that opens a pool of
+/// its own shape on a database [`World::fresh`] built.
+pub fn database_url(name: &str) -> String {
+    format!("{}/{name}", base())
+}
+
 /// A service and the pool behind it, dropped and recreated per test.
 ///
 /// The POOL is exposed deliberately: a few assertions are about what is IN a
@@ -282,6 +288,7 @@ impl World {
             .register_as(
                 Some(yadgar_project_db::service::REGISTER_CALLER),
                 self.registration(path, display_name, user, key, source_repo),
+                yadgar_dial::Deadline::none(),
             )
             .await
     }
@@ -775,6 +782,7 @@ impl World {
             .sync_as(
                 Some(yadgar_project_db::service::SYNC_CALLER),
                 self.sync_request(roots, projects, allow_mass_archive),
+                yadgar_dial::Deadline::none(),
             )
             .await
     }
@@ -799,7 +807,41 @@ impl World {
             roots: roots.to_vec(),
             projects: projects.to_vec(),
             allow_mass_archive,
+            allow_mass_revoke: false,
         }
+    }
+
+    /// `SyncProjects` with the mass-revoke guard's flag set as given, and the
+    /// mass-archive guard ON (team access stage 4).
+    pub async fn sync_revoking(
+        &self,
+        roots: &[DeclaredProject],
+        projects: &[DeclaredProject],
+        allow_mass_revoke: bool,
+    ) -> Result<SyncProjectsResponse, Status> {
+        let mut req = self.sync_request(roots, projects, false);
+        req.allow_mass_revoke = allow_mass_revoke;
+        self.db
+            .sync_as(
+                Some(yadgar_project_db::service::SYNC_CALLER),
+                req,
+                yadgar_dial::Deadline::none(),
+            )
+            .await
+    }
+
+    /// `(path, team_id, level)` for every stored grant, ordered. Read straight
+    /// from the table, so a read path that forgot to fill `Project.grants`
+    /// cannot satisfy an assertion made here.
+    pub async fn grant_rows(&self) -> Vec<(String, String, i8)> {
+        sqlx::query_as(
+            "SELECT p.path, g.team_id, g.level FROM project_grant g
+               JOIN project p ON p.id = g.project_id
+              ORDER BY p.path, g.team_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .expect("grant rows")
     }
 
     /// `(path, status, version, display_name, source_repo)` for every org-class
@@ -835,6 +877,7 @@ pub fn declared(path: &str, display_name: &str, source_repo: &str) -> DeclaredPr
         path: path.into(),
         display_name: display_name.into(),
         source_repo: source_repo.into(),
+        grants: Vec::new(),
     }
 }
 
@@ -1026,6 +1069,25 @@ pub fn boot_cleartext_env(db_name: &str, password_file: &Path) -> Vec<(String, S
         // B-U5 (ADR-0854): the client-auth mode has no default either, and a
         // cleartext listener can only be `off`.
         ("LISTEN_TLS_CLIENT_AUTH".to_string(), "off".to_string()),
+        // ADR-1006: the four server limits have no default in the library, so
+        // the binary refuses to boot without them. These are the chart's
+        // shipped values (`server.limits` in `chart/values.yaml`).
+        (
+            "LISTEN_MAX_CONCURRENT_STREAMS".to_string(),
+            "256".to_string(),
+        ),
+        (
+            "LISTEN_KEEPALIVE_INTERVAL_SECS".to_string(),
+            "30".to_string(),
+        ),
+        (
+            "LISTEN_KEEPALIVE_TIMEOUT_SECS".to_string(),
+            "10".to_string(),
+        ),
+        (
+            "LISTEN_MAX_HEADER_LIST_BYTES".to_string(),
+            "16384".to_string(),
+        ),
     ]
 }
 

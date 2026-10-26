@@ -324,6 +324,12 @@ pub enum BootError {
     #[error("{detail}")]
     ListenerTls { detail: String },
 
+    /// The listener's protocol limits refused the boot (ADR-1006). `detail` is
+    /// the crate's own sentence, which names the variable AND the
+    /// `server.limits.*` chart value.
+    #[error("{detail}")]
+    ListenerLimits { detail: String },
+
     // NO `name` FIELD. `yadgar_lifecycle::shutdown` installs both handlers and
     // returns one `io::Error`, so WHICH of the two failed is not knowable here.
     // Naming both is the honest reading and costs the operator nothing: the
@@ -395,7 +401,10 @@ mod lock;
 pub use lock::{migration_lock, MIGRATION_LOCK_TIMEOUT_CHART_KEY, MIGRATION_LOCK_TIMEOUT_KEY};
 
 mod serve_tls;
-pub use serve_tls::{listener_tls, server, ClientAuth, ServerTls, TLS_CHART_KEY};
+pub use serve_tls::{
+    listener_limits, listener_tls, server, ClientAuth, ServerLimits, ServerTls, LIMITS_CHART_KEY,
+    TLS_CHART_KEY,
+};
 
 #[cfg(test)]
 mod tests;

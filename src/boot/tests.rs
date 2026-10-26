@@ -634,3 +634,117 @@ fn a_usable_listen_address_parses_to_the_socket_addr_it_names() {
         "127.0.0.1:50051".parse().unwrap()
     );
 }
+
+// ── ADR-1006: THE LISTENER'S SERVER LIMITS ───────────────────────────────────
+//
+// `yadgar_lifecycle::serve_tls::ServerLimits` has NO default (ADR-0569), so the
+// four keys are required and this module's only job is to read them under the
+// `LISTEN` prefix, name the `server.limits` chart block in every refusal, and
+// route the refusal through `BootError`.
+
+/// The four keys at the chart's shipped values (ADR-1006), as `server.limits`
+/// in `chart/values.yaml` renders them.
+const LIMITS: [(&str, &str); 4] = [
+    ("LISTEN_MAX_CONCURRENT_STREAMS", "256"),
+    ("LISTEN_KEEPALIVE_INTERVAL_SECS", "30"),
+    ("LISTEN_KEEPALIVE_TIMEOUT_SECS", "10"),
+    ("LISTEN_MAX_HEADER_LIST_BYTES", "16384"),
+];
+
+/// Each variable and the chart value that renders it, which a refusal must name.
+const LIMIT_CHART_KEYS: [(&str, &str); 4] = [
+    (
+        "LISTEN_MAX_CONCURRENT_STREAMS",
+        "server.limits.maxConcurrentStreams",
+    ),
+    (
+        "LISTEN_KEEPALIVE_INTERVAL_SECS",
+        "server.limits.keepaliveIntervalSeconds",
+    ),
+    (
+        "LISTEN_KEEPALIVE_TIMEOUT_SECS",
+        "server.limits.keepaliveTimeoutSeconds",
+    ),
+    (
+        "LISTEN_MAX_HEADER_LIST_BYTES",
+        "server.limits.maxHeaderListBytes",
+    ),
+];
+
+fn limits_refusal(pairs: &[(&str, &str)]) -> String {
+    match listener_limits(env_of(pairs)) {
+        Err(err @ BootError::ListenerLimits { .. }) => err.to_string(),
+        Err(_) => panic!("the limits' refusal must be BootError::ListenerLimits"),
+        Ok(limits) => panic!("expected a refusal, got {limits:?}"),
+    }
+}
+
+/// THE READ IS REAL: every value comes from the lookup, none from a leftover
+/// default. The values differ from the chart's, so a mutation that ignored the
+/// lookup could not pass.
+#[test]
+fn the_limits_are_read_from_the_listen_prefix() {
+    let limits = listener_limits(env_of(&[
+        ("LISTEN_MAX_CONCURRENT_STREAMS", "17"),
+        ("LISTEN_KEEPALIVE_INTERVAL_SECS", "41"),
+        ("LISTEN_KEEPALIVE_TIMEOUT_SECS", "7"),
+        ("LISTEN_MAX_HEADER_LIST_BYTES", "2048"),
+    ]))
+    .expect("a full, in-range set of limits");
+    assert_eq!(limits.max_concurrent_streams(), 17);
+    assert_eq!(limits.keepalive_interval(), Duration::from_secs(41));
+    assert_eq!(limits.keepalive_timeout(), Duration::from_secs(7));
+    assert_eq!(limits.max_header_list_bytes(), 2048);
+}
+
+#[test]
+fn the_charts_shipped_limits_are_accepted() {
+    listener_limits(env_of(&LIMITS)).expect("the chart's defaults must boot");
+}
+
+/// ABSENCE REFUSES, one key at a time, naming the variable AND the chart value.
+#[test]
+fn an_absent_limit_is_refused_naming_the_variable_and_the_chart_key() {
+    for (var, chart_key) in LIMIT_CHART_KEYS {
+        let present: Vec<(&str, &str)> =
+            LIMITS.iter().copied().filter(|(k, _)| *k != var).collect();
+        let message = limits_refusal(&present);
+        assert!(message.contains(var), "{var}: {message}");
+        assert!(message.contains(chart_key), "{var}: {message}");
+    }
+}
+
+#[test]
+fn a_limit_that_is_not_a_number_or_out_of_range_is_refused_naming_both() {
+    for (var, chart_key) in LIMIT_CHART_KEYS {
+        for bad in ["not-a-number", "0", "99999999999"] {
+            let mut pairs: Vec<(&str, &str)> =
+                LIMITS.iter().copied().filter(|(k, _)| *k != var).collect();
+            pairs.push((var, bad));
+            let message = limits_refusal(&pairs);
+            assert!(message.contains(var), "{var}={bad}: {message}");
+            assert!(message.contains(chart_key), "{var}={bad}: {message}");
+        }
+    }
+}
+
+/// The one cross-key rule: a keepalive PING must be judged lost before the next
+/// is sent. The chart cannot express it in its schema, so a render check
+/// refuses it there and the binary refuses it here.
+#[test]
+fn a_keepalive_timeout_not_below_the_interval_is_refused() {
+    let message = limits_refusal(&[
+        ("LISTEN_MAX_CONCURRENT_STREAMS", "256"),
+        ("LISTEN_KEEPALIVE_INTERVAL_SECS", "10"),
+        ("LISTEN_KEEPALIVE_TIMEOUT_SECS", "10"),
+        ("LISTEN_MAX_HEADER_LIST_BYTES", "16384"),
+    ]);
+    assert!(
+        message.contains("LISTEN_KEEPALIVE_TIMEOUT_SECS"),
+        "{message}"
+    );
+    assert!(
+        message.contains("server.limits.keepaliveTimeoutSeconds"),
+        "{message}"
+    );
+}

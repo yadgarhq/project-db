@@ -67,6 +67,7 @@
 
 use sqlx::MySqlPool;
 use tonic::{Request, Response, Status};
+use yadgar_dial::Deadline;
 use yadgar_lifecycle::serve_tls::caller_common_name;
 use yadgar_telemetry::estimator::Class;
 use yadgar_telemetry::grpc::status_name;
@@ -215,6 +216,8 @@ impl ProjectDbService for ProjectDb {
         // chain lives on the request's extensions, and `into_inner` drops them.
         let caller = caller_common_name(&request);
         let request_id = request_id_of(&request);
+        // THE CALLER'S DEADLINE, read before the request is consumed (ADR-1019).
+        let deadline = Deadline::of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
@@ -224,7 +227,7 @@ impl ProjectDbService for ProjectDb {
         );
 
         call.run(
-            async move { self.register_as(caller.as_deref(), req).await },
+            async move { self.register_as(caller.as_deref(), req, deadline).await },
             |r| envelope(r, 1),
             status_name,
         )
@@ -237,6 +240,8 @@ impl ProjectDbService for ProjectDb {
         request: Request<ResolveProjectRequest>,
     ) -> Result<Response<ResolveProjectResponse>, Status> {
         let request_id = request_id_of(&request);
+        // THE CALLER'S DEADLINE, read before the request is consumed (ADR-1019).
+        let deadline = Deadline::of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
@@ -246,7 +251,7 @@ impl ProjectDbService for ProjectDb {
         );
 
         call.run(
-            async move { self.resolve(req).await },
+            async move { self.resolve(req, deadline).await },
             |r| envelope(r, 1),
             status_name,
         )
@@ -259,6 +264,8 @@ impl ProjectDbService for ProjectDb {
         request: Request<GetProjectRequest>,
     ) -> Result<Response<GetProjectResponse>, Status> {
         let request_id = request_id_of(&request);
+        // THE CALLER'S DEADLINE, read before the request is consumed (ADR-1019).
+        let deadline = Deadline::of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
@@ -268,7 +275,7 @@ impl ProjectDbService for ProjectDb {
         );
 
         call.run(
-            async move { self.get(req).await },
+            async move { self.get(req, deadline).await },
             |r| envelope(r, 1),
             status_name,
         )
@@ -281,6 +288,8 @@ impl ProjectDbService for ProjectDb {
         request: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
         let request_id = request_id_of(&request);
+        // THE CALLER'S DEADLINE, read before the request is consumed (ADR-1019).
+        let deadline = Deadline::of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
@@ -290,7 +299,7 @@ impl ProjectDbService for ProjectDb {
         );
 
         call.run(
-            async move { self.list(req).await },
+            async move { self.list(req, deadline).await },
             |r| envelope(r, r.projects.len() as u32),
             status_name,
         )
@@ -303,6 +312,8 @@ impl ProjectDbService for ProjectDb {
         request: Request<TouchProjectsRequest>,
     ) -> Result<Response<TouchProjectsResponse>, Status> {
         let request_id = request_id_of(&request);
+        // THE CALLER'S DEADLINE, read before the request is consumed (ADR-1019).
+        let deadline = Deadline::of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
@@ -317,7 +328,7 @@ impl ProjectDbService for ProjectDb {
         let rows = req.paths.len() as u32;
 
         call.run(
-            async move { self.touch(req).await },
+            async move { self.touch(req, deadline).await },
             |r| envelope(r, rows),
             status_name,
         )
@@ -333,6 +344,8 @@ impl ProjectDbService for ProjectDb {
         // request's extensions, and `into_inner` drops them.
         let caller = caller_common_name(&request);
         let request_id = request_id_of(&request);
+        // THE CALLER'S DEADLINE, read before the request is consumed (ADR-1019).
+        let deadline = Deadline::of(&request);
         let req = request.into_inner();
         let call = Call::start(
             SERVICE,
@@ -342,7 +355,7 @@ impl ProjectDbService for ProjectDb {
         );
 
         call.run(
-            async move { self.sync_as(caller.as_deref(), req).await },
+            async move { self.sync_as(caller.as_deref(), req, deadline).await },
             |r| {
                 envelope(
                     r,

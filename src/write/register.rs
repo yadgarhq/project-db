@@ -7,11 +7,13 @@
 use prost::Message as _;
 use sqlx::{MySql, Transaction};
 use tonic::Status;
+use yadgar_dial::Deadline;
 
 use crate::idem::{self, Claimed};
 use crate::path;
 use crate::pb::yadgar::common::v1::{Meta, Visibility};
 use crate::pb::yadgar::project::v1::*;
+use crate::pooled::Pooled;
 use crate::service::{ProjectDb, REGISTER_CALLER};
 use crate::sql::{internal, scope_of};
 
@@ -73,6 +75,7 @@ impl ProjectDb {
         &self,
         caller: Option<&str>,
         req: RegisterProjectRequest,
+        deadline: Deadline,
     ) -> Result<RegisterProjectResponse, Status> {
         // THE CALLER CHECK COMES BEFORE THE STORE (ADR-1007): before the path
         // is validated and before the pool is touched. (The handler's telemetry
@@ -80,13 +83,14 @@ impl ProjectDb {
         // say whether a path is taken; a caller that is not `project` gets none
         // of those answers, and takes no connection out of the pool.
         admit(caller)?;
-        self.register(req).await
+        self.register(req, deadline).await
     }
 
     /// The registration itself, for an admitted caller only.
     async fn register(
         &self,
         req: RegisterProjectRequest,
+        deadline: Deadline,
     ) -> Result<RegisterProjectResponse, Status> {
         let scope = scope_of(&req.scope)?;
         path::validate("path", &req.path)?;
@@ -102,15 +106,13 @@ impl ProjectDb {
         // an unperformed operation from spending a key is transaction ATOMICITY,
         // at every refusal in this function.
         //
-        // It sits here on a COST argument instead: a request that cannot succeed
-        // should not take a connection out of the pool and open a transaction to
-        // be told so. `local` is the root of the PRIVATE class of project ids, so
-        // a project owning it becomes the nearest registered ancestor of every
-        // private path in the estate and swallows all of them — see
-        // `path::RESERVED_ROOT` for the whole of the argument. Registration is
-        // immutable here, because rename is held back, so that door only opens
-        // one way; the guard therefore ships AHEAD of the first caller of this
-        // rpc rather than behind it.
+        // It sits here on a COST argument instead: a request that cannot succeed should not take a
+        // connection out of the pool and open a transaction to be told so. `local` is the root of
+        // the PRIVATE class of project ids, so a project owning it becomes the nearest registered
+        // ancestor of every private path in the estate and swallows all of them — see
+        // `path::RESERVED_ROOT` for the whole of the argument. Registration is immutable here,
+        // because rename is held back, so that door only opens one way; the guard therefore ships
+        // AHEAD of the first caller of this rpc rather than behind it.
         path::refuse_reserved_root("path", &req.path)?;
         // EMPTY IS LEGITIMATE. A display name is presentation, and a project
         // whose name is its path is a perfectly ordinary registration — the path
@@ -133,7 +135,8 @@ impl ProjectDb {
         // ABOVE THE TRANSACTION, on the cost and no-oracle arguments — see [`Class`].
         let class = Class::of(&req.path, &scope.user_id, &req.source_repo)?;
 
-        let mut tx = self.pool.begin().await.map_err(internal)?;
+        let mut conn = Pooled::acquire(&self.pool, deadline).await?;
+        let mut tx = conn.begin().await?;
         if let Claimed::Replay(original) = idem::claim(
             &mut tx,
             scope,

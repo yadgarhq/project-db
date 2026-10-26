@@ -60,6 +60,22 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 
 use yadgar_project_db::boot::{self, BootError, ServerTls};
 
+/// The chart's shipped `server.limits` (ADR-1006), as the library reads them:
+/// the library has no default, so a test that builds a server states them.
+fn limits() -> boot::ServerLimits {
+    boot::listener_limits(|key| {
+        match key {
+            "LISTEN_MAX_CONCURRENT_STREAMS" => Some("256"),
+            "LISTEN_KEEPALIVE_INTERVAL_SECS" => Some("30"),
+            "LISTEN_KEEPALIVE_TIMEOUT_SECS" => Some("10"),
+            "LISTEN_MAX_HEADER_LIST_BYTES" => Some("16384"),
+            _ => None,
+        }
+        .map(str::to_string)
+    })
+    .expect("the chart's shipped limits are in range")
+}
+
 /// The name the test certificates are issued for, and the name the rig listens
 /// on.
 const SERVED_NAME: &str = "localhost";
@@ -361,7 +377,7 @@ async fn a_permanent_failure_on_the_first_address_is_reported_not_retried() {
 }
 
 fn spawn(listener: TcpListener, tls: Option<&ServerTls>) {
-    let mut builder = boot::server(tls).expect("a usable identity");
+    let mut builder = boot::server(tls, &limits()).expect("a usable identity");
     let router = builder.add_routes(tonic::service::Routes::default());
     tokio::spawn(async move {
         let _ = router
@@ -522,7 +538,7 @@ async fn a_certificate_that_cannot_be_read_refuses_the_boot() {
     let missing = std::env::temp_dir().join("yadgar-project-db-no-such-cert-31c7ae.pem");
 
     let tls = serve_tls(&missing, key.path());
-    let error = boot::server(Some(&tls)).expect_err("a missing certificate must refuse");
+    let error = boot::server(Some(&tls), &limits()).expect_err("a missing certificate must refuse");
     assert!(
         matches!(error, BootError::ListenerTls { .. }),
         "a missing certificate must be the listener's refusal"
@@ -543,7 +559,7 @@ async fn a_private_key_that_cannot_be_read_refuses_the_boot() {
     let missing = std::env::temp_dir().join("yadgar-project-db-no-such-key-8de402.pem");
 
     let tls = serve_tls(cert.path(), &missing);
-    let error = boot::server(Some(&tls)).expect_err("a missing private key must refuse");
+    let error = boot::server(Some(&tls), &limits()).expect_err("a missing private key must refuse");
     assert!(
         matches!(error, BootError::ListenerTls { .. }),
         "a missing private key must be the listener's refusal"
@@ -567,7 +583,7 @@ async fn an_undecodable_certificate_refuses_the_boot() {
     for contents in ["", "   ", "\n", "there is no certificate in this file\n"] {
         let cert = TempPem::with(contents);
         let tls = serve_tls(cert.path(), key.path());
-        let outcome = boot::server(Some(&tls));
+        let outcome = boot::server(Some(&tls), &limits());
         assert!(
             matches!(outcome, Err(BootError::ListenerTls { .. })),
             "an undecodable certificate file must refuse the boot"
@@ -584,7 +600,7 @@ async fn an_undecodable_private_key_refuses_the_boot() {
     for contents in ["", "   ", "\n", "there is no key in this file\n"] {
         let key = TempPem::with(contents);
         let tls = serve_tls(cert.path(), key.path());
-        let outcome = boot::server(Some(&tls));
+        let outcome = boot::server(Some(&tls), &limits());
         assert!(
             matches!(outcome, Err(BootError::ListenerTls { .. })),
             "an undecodable private key file must refuse the boot"
@@ -603,7 +619,7 @@ async fn a_certificate_and_a_key_that_do_not_match_refuse_the_boot() {
     let key = TempPem::with(&other.key_pem);
 
     let tls = serve_tls(cert.path(), key.path());
-    let outcome = boot::server(Some(&tls));
+    let outcome = boot::server(Some(&tls), &limits());
     assert!(
         matches!(outcome, Err(BootError::ListenerTls { .. })),
         "a certificate that does not belong to the key must refuse the boot"
@@ -654,7 +670,7 @@ async fn the_refusal_names_the_reason_rather_than_just_transport_error() {
     let key = TempPem::with(&other.key_pem);
 
     let tls = serve_tls(cert.path(), key.path());
-    let Err(BootError::ListenerTls { detail }) = boot::server(Some(&tls)) else {
+    let Err(BootError::ListenerTls { detail }) = boot::server(Some(&tls), &limits()) else {
         panic!("a certificate that does not belong to the key must refuse the boot");
     };
 
@@ -795,7 +811,7 @@ async fn an_empty_client_ca_refuses_the_boot_naming_the_file() {
     let ca = TempPem::with("");
     let tls = listener(cert.path(), key.path(), "required", Some(ca.path()));
 
-    let error = boot::server(Some(&tls)).expect_err("an empty client CA must refuse");
+    let error = boot::server(Some(&tls), &limits()).expect_err("an empty client CA must refuse");
     let file = ca
         .path()
         .file_name()
