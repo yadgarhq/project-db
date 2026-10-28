@@ -41,7 +41,7 @@ repos:
     # `ADR-0523-LIBRARY-WATCHED` marker in `src/rotate.rs`. B-U5 moved this
     # binary's only direct boot read into `yadgar_lifecycle::serve_tls`, so
     # without it the gate judged zero reads and refused.
-    rev: v1.37.1
+    rev: v1.39.0
     hooks:
       - id: gitleaks
       - id: prettier
