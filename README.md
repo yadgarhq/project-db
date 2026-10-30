@@ -221,6 +221,12 @@ compile time. Every timestamp is converted by the ENGINE —
 `google.protobuf.Timestamp` in `src/rows.rs`. The cast lives in one column list
 so no statement can forget it.
 
+## Installing
+
+Install project-db from the published OCI chart: `helm install project-db oci://ghcr.io/yadgarhq/charts/project-db --version <version>`. The release pins that chart to the image digest.
+
+A checkout of `chart/` renders `image.tag: latest`, a moving tag. Use a checkout for development only.
+
 ## Local development
 
 ```bash
