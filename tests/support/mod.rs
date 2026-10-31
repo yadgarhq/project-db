@@ -182,6 +182,15 @@ impl World {
         if !history.is_empty() {
             let set = yadgar_store::migrate::MigrationSet::new(history).expect("history set");
             Self::apply(&pool, &set).await.expect("migrate the history");
+            // The history's SQL is byte-different from today's, and the store
+            // records a digest of what ran (yaadgaar #249). A store that
+            // applied it BEFORE checksums existed has NULL there, which the
+            // next boot trusts and backfills. Model that store; leaving the
+            // old digest refuses boot with ChecksumMismatch.
+            sqlx::query("UPDATE yadgar_schema_migrations SET checksum = NULL")
+                .execute(&pool)
+                .await
+                .expect("model a pre-checksum ledger");
         }
         pool
     }
