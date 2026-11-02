@@ -34,7 +34,8 @@
         "engineOperatorReserve": {
           "type": "integer",
           "minimum": 1,
-          "description": "Connections of engineMaxConnections the pool arithmetic leaves untouched for an operator. Rendered as DB_ENGINE_OPERATOR_RESERVE and read with no fallback (ADR-0837, ADR-0849). Minimum 1: zero leaves a non-admin operator no way into a full engine (store refuses it at connect)."
+          "maximum": 100000,
+          "description": "Connections of engineMaxConnections the pool arithmetic leaves untouched for an operator. Rendered as DB_ENGINE_OPERATOR_RESERVE and read with no fallback (ADR-0837, ADR-0849). Minimum 1: zero leaves a non-admin operator no way into a full engine (store refuses it at connect). Maximum 100000: MariaDB's own ceiling for max_connections, and the reserve sits inside it."
         },
         "acquireTimeoutSeconds": {
           "type": "integer",
@@ -45,12 +46,14 @@
         "idleTimeoutSeconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Seconds an idle connection is kept before the pool closes it. Rendered as DB_IDLE_TIMEOUT_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero churns connections as fast as the pool opens them (store refuses it at connect)."
+          "maximum": 31536000,
+          "description": "Seconds an idle connection is kept before the pool closes it. Rendered as DB_IDLE_TIMEOUT_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero churns connections as fast as the pool opens them (store refuses it at connect). Maximum 31536000 (one year): the largest wait_timeout MariaDB accepts, so a longer pool setting has no effect."
         },
         "maxLifetimeSeconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Seconds a connection lives before the pool retires it, however busy it is. Rendered as DB_MAX_LIFETIME_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero retires a connection before it can do any work (store refuses it at connect)."
+          "maximum": 31536000,
+          "description": "Seconds a connection lives before the pool retires it, however busy it is. Rendered as DB_MAX_LIFETIME_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero retires a connection before it can do any work (store refuses it at connect). Maximum 31536000: a one-year cap that keeps the value in a sane range."
         },
         "create": {},
         "mariadbOperator": {
