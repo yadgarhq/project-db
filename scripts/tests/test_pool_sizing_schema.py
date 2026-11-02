@@ -29,9 +29,9 @@ CHART = Path(__file__).resolve().parents[2] / "chart"
 # (chart key, env var, shipped value, upper bound or None)
 KNOBS: tuple[tuple[str, str, str, int | None], ...] = (
     ("database.acquireTimeoutSeconds", "DB_ACQUIRE_TIMEOUT_SECONDS", "12", 13),
-    ("database.idleTimeoutSeconds", "DB_IDLE_TIMEOUT_SECONDS", "600", None),
-    ("database.maxLifetimeSeconds", "DB_MAX_LIFETIME_SECONDS", "1800", None),
-    ("database.engineOperatorReserve", "DB_ENGINE_OPERATOR_RESERVE", "5", None),
+    ("database.idleTimeoutSeconds", "DB_IDLE_TIMEOUT_SECONDS", "600", 31536000),
+    ("database.maxLifetimeSeconds", "DB_MAX_LIFETIME_SECONDS", "1800", 31536000),
+    ("database.engineOperatorReserve", "DB_ENGINE_OPERATOR_RESERVE", "5", 100000),
 )
 
 # ADR-0845 (ledger 1278, C-DB1): `tls.enabled` lost its chart default and is
@@ -170,3 +170,41 @@ def test_the_shipped_pool_is_three_per_replica() -> None:
     result = render()
     assert result.returncode == 0, result.stderr
     assert rendered_value(result.stdout, "DB_MAX_CONNECTIONS") == 'value: "3"'
+
+
+# THE UPPER BOUNDS (yaadgaar 485). `engineOperatorReserve` is headroom INSIDE the engine's
+# connection ceiling, and MariaDB's `max_connections` tops out at 100000. The two durations
+# are capped at 31536000 s (one year, `idleTimeoutSeconds` being MariaDB's largest
+# `wait_timeout`; for `maxLifetimeSeconds` it is only a sane-range cap). Past the
+# bound a values file used to render a nonsense integer (1e20 rendered
+# "-9223372036854775808", a silent `int64` overflow).
+BOUNDED = (
+    ("database.engineOperatorReserve", "DB_ENGINE_OPERATOR_RESERVE", 100000),
+    ("database.idleTimeoutSeconds", "DB_IDLE_TIMEOUT_SECONDS", 31536000),
+    ("database.maxLifetimeSeconds", "DB_MAX_LIFETIME_SECONDS", 31536000),
+)
+
+
+def test_one_above_the_upper_bound_is_refused_and_the_bound_renders(tmp_path: Path) -> None:
+    for knob, variable, maximum in BOUNDED:
+        block, leaf = knob.split(".")
+        for value, ok in ((maximum + 1, False), (maximum, True)):
+            values_file = tmp_path / f"values-{leaf}-{value}.yaml"
+            values_file.write_text(f"{block}:\n  {leaf}: {value}\n")
+            result = render("-f", str(values_file))
+            if ok:
+                assert result.returncode == 0, f"{knob}: {result.stderr}"
+                assert rendered_value(result.stdout, variable) == f'value: "{value}"'
+            else:
+                assert result.returncode != 0, f"{knob}={value} rendered"
+                assert leaf in result.stderr, result.stderr
+
+
+def test_a_values_file_one_e20_is_refused_not_wrapped(tmp_path: Path) -> None:
+    for knob, _, _ in BOUNDED:
+        block, leaf = knob.split(".")
+        values_file = tmp_path / f"values-{leaf}.yaml"
+        values_file.write_text(f"{block}:\n  {leaf}: 1.0e+20\n")
+        result = render("-f", str(values_file))
+        assert result.returncode != 0, f"{knob}=1e20 rendered"
+        assert leaf in result.stderr, result.stderr
