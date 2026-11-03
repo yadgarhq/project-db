@@ -56,6 +56,15 @@
           "description": "Seconds a connection lives before the pool retires it, however busy it is. Rendered as DB_MAX_LIFETIME_SECONDS and read with no fallback (ADR-0837). Minimum 1: zero retires a connection before it can do any work (store refuses it at connect). Maximum 31536000: a one-year cap that keeps the value in a sane range."
         },
         "create": {},
+        "createAppAccount": {},
+        "appUser": {},
+        "appPasswordSecret": {},
+        "appPasswordJob": {
+          "properties": {
+            "image": {}
+          },
+          "additionalProperties": false
+        },
         "mariadbOperator": {
           "properties": {
             "apiVersion": {}
