@@ -28,6 +28,7 @@ use tonic::codegen::http::uri::PathAndQuery;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::Code;
 use yadgar_project_db::boot;
+use yadgar_project_db::pb::yadgar::common::v1::Scope;
 use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbServiceServer;
 use yadgar_project_db::pb::yadgar::project::v1::{
     RegisterProjectRequest, RegisterProjectResponse, SyncProjectsRequest, SyncProjectsResponse,
@@ -402,4 +403,94 @@ fn nowhere() -> sqlx::MySqlPool {
         .acquire_timeout(Duration::from_secs(1))
         .connect_lazy("mysql://nobody:nothing@127.0.0.1:1/nowhere")
         .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// D67: what a SyncProjects call records (yaadgaar #630)
+// ---------------------------------------------------------------------------
+
+/// The `request_id` a `SyncProjects` Scope claims. Kept on every record: it is
+/// D67's join key, not an identity claim.
+const CLAIMED_SYNC_REQUEST_ID: &str = "01a1a7f5-d450-71f7-a-claimed-sync";
+
+/// A declaration whose Scope claims every identity field, the seeder's
+/// principal among them, as `project` relays it (ADR-0942).
+fn a_claimed_sync() -> SyncProjectsRequest {
+    SyncProjectsRequest {
+        scope: Some(Scope {
+            request_id: CLAIMED_SYNC_REQUEST_ID.into(),
+            user_id: SEEDER.into(),
+            instance_id: "a-claimed-instance".into(),
+            project_id: "a/claimed-project".into(),
+            ..Default::default()
+        }),
+        roots: vec![declared("tapir-1", "", "tapir-1/registry")],
+        projects: vec![],
+        allow_mass_archive: false,
+        allow_mass_revoke: false,
+    }
+}
+
+/// **A REFUSED `SyncProjects` RECORDS NO CLAIMED IDENTITY (yaadgaar #630).** A
+/// direct handler call has no peer chain, so `admit` refuses it, while its
+/// Scope claims the seeder's principal. Before the fix the handler started its
+/// `Call` from that Scope ahead of `admit`, so D67 attributed a refused call to
+/// the principal the caller named. The record keeps the refusal and the
+/// `request_id`, and carries empty `user_id`, `instance_id` and `project_id`.
+///
+/// **THE MUTATION THAT REDS IT:** start the `Call` with the claimed Scope
+/// (`tel_scope(&req.scope, request_id)`) again.
+#[tokio::test]
+async fn a_refused_sync_records_no_claimed_principal() {
+    use yadgar_project_db::pb::yadgar::project::v1::project_db_service_server::ProjectDbService as _;
+
+    let record = the_call_record(
+        ProjectDb::new(nowhere()).sync_projects(tonic::Request::new(a_claimed_sync())),
+    )
+    .await;
+
+    assert!(record.contains("PERMISSION_DENIED"), "{record}");
+    assert!(carries(&record, CLAIMED_SYNC_REQUEST_ID), "{record}");
+    assert!(!record.contains(SEEDER), "{record}");
+    assert!(record.contains(r#""user_id":"""#), "{record}");
+    assert!(record.contains(r#""instance_id":"""#), "{record}");
+    assert!(record.contains(r#""project_id":"""#), "{record}");
+}
+
+/// **AN ADMITTED SYNC IS RECORDED UNDER ITS PRINCIPAL (yaadgaar #630).** Over a
+/// real handshake, so the handler hands the helper the caller it read off the
+/// verified leaf. The pool points nowhere, so the call fails AFTER admission,
+/// and the record still names the principal because both checks passed.
+///
+/// The sink is THREAD-scoped. `#[tokio::test]` runs one thread, and the served
+/// handler runs on it, so its record lands in this capture.
+///
+/// **THE MUTATION THAT REDS IT:** pass `None` as the caller to
+/// `recorded_scope` in the handler.
+#[tokio::test]
+async fn an_admitted_sync_is_recorded_under_its_principal() {
+    let pki = Pki::new();
+    let (port, _files) = serve("recorded", &pki, ProjectDb::new(nowhere())).await;
+
+    let records = RecordCapture::default();
+    {
+        let _sink = yadgar_telemetry::record::set_sink(std::sync::Arc::new(records.clone()));
+        let err = sync_over_tls(port, &pki, pki.client("project-caller"), a_claimed_sync())
+            .await
+            .expect_err("the pool points nowhere");
+        assert_ne!(err.code(), Code::PermissionDenied, "admitted: {err:?}");
+    }
+
+    let lines = records.0.lock().expect("the capture").clone();
+    let syncs: Vec<_> = lines
+        .iter()
+        .filter(|l| l.contains(r#""tool":"SyncProjects""#))
+        .collect();
+    assert_eq!(syncs.len(), 1, "exactly one SyncProjects record: {lines:?}");
+    assert!(
+        syncs[0].contains(&format!(r#""user_id":"{SEEDER}""#)),
+        "{}",
+        syncs[0]
+    );
+    assert!(carries(syncs[0], CLAIMED_SYNC_REQUEST_ID), "{}", syncs[0]);
 }

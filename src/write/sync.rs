@@ -58,7 +58,7 @@ use yadgar_dial::Deadline;
 
 use super::grants;
 use crate::path;
-use crate::pb::yadgar::common::v1::Visibility;
+use crate::pb::yadgar::common::v1::{Scope, Visibility};
 use crate::pb::yadgar::project::v1::*;
 use crate::pooled::Pooled;
 use crate::service::{ProjectDb, SYNC_CALLER};
@@ -71,6 +71,10 @@ const MAX_CHARS: usize = 255;
 
 /// The width of `created_by` / `updated_by`, `VARCHAR(64)`.
 const MAX_PRINCIPAL_CHARS: usize = 64;
+
+/// What D67 records for this verb, decided by the checks below (yaadgaar #630).
+mod recorded;
+pub(crate) use recorded::recorded_scope;
 
 impl ProjectDb {
     /// The whole sync, for a caller whose identity has already been read.
@@ -86,17 +90,7 @@ impl ProjectDb {
         req: SyncProjectsRequest,
         deadline: Deadline,
     ) -> Result<SyncProjectsResponse, Status> {
-        admit(caller)?;
-        // NOT `sql::scope_of`, whose refusal says a Scope "is attested by the
-        // gateway". No gateway sits on this path: the seeder builds this Scope
-        // itself and `project` relays it (ADR-0942), so that advice is false here.
-        let scope = req.scope.as_ref().ok_or_else(|| {
-            Status::invalid_argument(
-                "scope is required: the seeder builds it with its system principal as user_id \
-                 and a request_id it mints, and project relays it unchanged (ADR-0942)",
-            )
-        })?;
-        let actor = principal(&scope.user_id)?;
+        let actor = admitted(caller, req.scope.as_ref())?;
         let declared = validate(&req)?;
 
         let mut conn = Pooled::acquire(&self.pool, deadline).await?;
@@ -116,6 +110,23 @@ impl ProjectDb {
             }
         }
     }
+}
+
+/// Every check that admits a sync, in order: the caller, a Scope, and the
+/// principal it carries, which is returned. `sync_as` refuses on it, and
+/// [`recorded_scope`] records an identity only when it passes (yaadgaar #630).
+fn admitted<'a>(caller: Option<&str>, scope: Option<&'a Scope>) -> Result<&'a str, Status> {
+    admit(caller)?;
+    // NOT `sql::scope_of`, whose refusal says a Scope "is attested by the
+    // gateway". No gateway sits on this path: the seeder builds this Scope
+    // itself and `project` relays it (ADR-0942), so that advice is false here.
+    let scope = scope.ok_or_else(|| {
+        Status::invalid_argument(
+            "scope is required: the seeder builds it with its system principal as user_id \
+             and a request_id it mints, and project relays it unchanged (ADR-0942)",
+        )
+    })?;
+    principal(&scope.user_id)
 }
 
 /// Plan step 1: `project-caller`, EXACTLY. The name `platform` writes is
