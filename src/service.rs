@@ -351,7 +351,9 @@ impl ProjectDbService for ProjectDb {
             SERVICE,
             "SyncProjects",
             Kind::Write,
-            tel_scope(&req.scope, request_id),
+            // THE CLAIMED SCOPE ONLY WHEN THE CALL WOULD BE ADMITTED (yaadgaar
+            // #630): a refused call records no identity it did not prove.
+            crate::write::recorded_scope(caller.as_deref(), &req.scope, request_id),
         );
 
         call.run(

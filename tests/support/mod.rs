@@ -1347,7 +1347,7 @@ pub const FORWARDED_REQUEST_ID: &str = "01a0fdd8-2b87-704e-b0b6-77e1c0ffee42";
 /// Captures every `CallRecord` line `yadgar_telemetry::record::emit` writes,
 /// for as long as the guard `record::set_sink` hands back lives.
 #[derive(Clone, Default)]
-pub struct RecordCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+pub struct RecordCapture(pub std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
 impl yadgar_telemetry::record::Sink for RecordCapture {
     fn write_record(&self, line: &str) -> std::io::Result<()> {

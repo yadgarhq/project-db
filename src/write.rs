@@ -74,6 +74,8 @@ mod register;
 mod sync;
 mod touch;
 
+pub(crate) use sync::recorded_scope;
+
 /// Why `RenameProject` is refused — see this module's header.
 const HELD_BACK: &str = "this release does not implement it, and the reason is the records rather \
      than the code. Every memory, wiki page, ADR and task already stamped with a project path goes \
