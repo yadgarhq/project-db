@@ -185,6 +185,9 @@ fn an_absent_server_limit_is_refused_naming_the_variable_and_the_chart_key() {
         ("DB_MIGRATION_LOCK_TIMEOUT_SECONDS", "60"),
         ("LISTEN_TLS_ENABLED", "0"),
         ("LISTEN_TLS_CLIENT_AUTH", "off"),
+        // Read by the library from v0.4.0 on (yadgarhq/lifecycle#78); older pins
+        // ignore it, so it sits in `base` and out of the absent-key loop below.
+        ("LISTEN_MAX_CONNECTION_AGE_SECS", "1800"),
     ];
     let limits = [
         (

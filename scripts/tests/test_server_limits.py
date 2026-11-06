@@ -1,10 +1,11 @@
-"""The four server limits (ADR-1006) are chart values, rendered and range-checked here.
+"""The five server limits (ADR-1006) are chart values, rendered and range-checked here.
 
 `yadgar-lifecycle`'s `ServerLimits` has NO default (ADR-0569, ADR-0705): the binary
 refuses to boot when one of `LISTEN_MAX_CONCURRENT_STREAMS`,
 `LISTEN_KEEPALIVE_INTERVAL_SECS`, `LISTEN_KEEPALIVE_TIMEOUT_SECS`
-or `LISTEN_MAX_HEADER_LIST_BYTES` is absent, not a
-whole number or out of range. This chart supplies the defaults (`server.limits` in
+`LISTEN_MAX_HEADER_LIST_BYTES` or `LISTEN_MAX_CONNECTION_AGE_SECS` is absent, not a
+whole number or out of range (the last from yadgar-lifecycle v0.4.0 on; older releases
+ignore it). This chart supplies the defaults (`server.limits` in
 `values.yaml`), renders them unconditionally, and refuses at RENDER what the binary
 would refuse at boot. `tests/chart_server_limits.rs` pins the same defaults and ranges
 against the library's own range constants; this file holds the render half.
@@ -28,6 +29,7 @@ LIMITS: tuple[tuple[str, str, int, int, int], ...] = (
     ("keepaliveIntervalSeconds", "LISTEN_KEEPALIVE_INTERVAL_SECS", 30, 1, 3_600),
     ("keepaliveTimeoutSeconds", "LISTEN_KEEPALIVE_TIMEOUT_SECS", 10, 1, 600),
     ("maxHeaderListBytes", "LISTEN_MAX_HEADER_LIST_BYTES", 16_384, 1_024, 1_048_576),
+    ("maxConnectionAgeSeconds", "LISTEN_MAX_CONNECTION_AGE_SECS", 1_800, 1, 86_400),
 )
 
 

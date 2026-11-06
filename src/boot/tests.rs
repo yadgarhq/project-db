@@ -644,11 +644,17 @@ fn a_usable_listen_address_parses_to_the_socket_addr_it_names() {
 
 /// The four keys at the chart's shipped values (ADR-1006), as `server.limits`
 /// in `chart/values.yaml` renders them.
-const LIMITS: [(&str, &str); 4] = [
+///
+/// `LISTEN_MAX_CONNECTION_AGE_SECS` is read by the library from v0.4.0 on
+/// (yadgarhq/lifecycle#78); older pins ignore it. It stays out of
+/// `LIMIT_CHART_KEYS`, whose absent-key loop needs a library that refuses it, and
+/// the pin-bump PR adds it there.
+const LIMITS: [(&str, &str); 5] = [
     ("LISTEN_MAX_CONCURRENT_STREAMS", "256"),
     ("LISTEN_KEEPALIVE_INTERVAL_SECS", "30"),
     ("LISTEN_KEEPALIVE_TIMEOUT_SECS", "10"),
     ("LISTEN_MAX_HEADER_LIST_BYTES", "16384"),
+    ("LISTEN_MAX_CONNECTION_AGE_SECS", "1800"),
 ];
 
 /// Each variable and the chart value that renders it, which a refusal must name.
@@ -689,6 +695,7 @@ fn the_limits_are_read_from_the_listen_prefix() {
         ("LISTEN_KEEPALIVE_INTERVAL_SECS", "41"),
         ("LISTEN_KEEPALIVE_TIMEOUT_SECS", "7"),
         ("LISTEN_MAX_HEADER_LIST_BYTES", "2048"),
+        ("LISTEN_MAX_CONNECTION_AGE_SECS", "3600"),
     ]))
     .expect("a full, in-range set of limits");
     assert_eq!(limits.max_concurrent_streams(), 17);
@@ -738,6 +745,7 @@ fn a_keepalive_timeout_not_below_the_interval_is_refused() {
         ("LISTEN_KEEPALIVE_INTERVAL_SECS", "10"),
         ("LISTEN_KEEPALIVE_TIMEOUT_SECS", "10"),
         ("LISTEN_MAX_HEADER_LIST_BYTES", "16384"),
+        ("LISTEN_MAX_CONNECTION_AGE_SECS", "1800"),
     ]);
     assert!(
         message.contains("LISTEN_KEEPALIVE_TIMEOUT_SECS"),

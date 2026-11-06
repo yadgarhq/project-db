@@ -67,36 +67,42 @@ fn chart_limit(leaf: &str) -> u64 {
 }
 
 /// (chart leaf, ADR-1006 default, literal minimum, literal maximum, library range).
-fn limits() -> [(&'static str, u64, u64, u64, RangeInclusive<u64>); 4] {
+type Limit = (&'static str, u64, u64, u64, Option<RangeInclusive<u64>>);
+
+/// The library range is `None` for `maxConnectionAgeSeconds` until the lifecycle
+/// pin carries `ServerLimits::MAX_CONNECTION_AGE_SECS` (yadgarhq/lifecycle#78,
+/// v0.4.0); the literals still pin it, and the pin-bump PR replaces the `None`.
+fn limits() -> [Limit; 5] {
     [
         (
             "maxConcurrentStreams",
             256,
             1,
             10_000,
-            ServerLimits::MAX_CONCURRENT_STREAMS,
+            Some(ServerLimits::MAX_CONCURRENT_STREAMS),
         ),
         (
             "keepaliveIntervalSeconds",
             30,
             1,
             3_600,
-            ServerLimits::KEEPALIVE_INTERVAL_SECS,
+            Some(ServerLimits::KEEPALIVE_INTERVAL_SECS),
         ),
         (
             "keepaliveTimeoutSeconds",
             10,
             1,
             600,
-            ServerLimits::KEEPALIVE_TIMEOUT_SECS,
+            Some(ServerLimits::KEEPALIVE_TIMEOUT_SECS),
         ),
         (
             "maxHeaderListBytes",
             16_384,
             1_024,
             1_048_576,
-            ServerLimits::MAX_HEADER_LIST_BYTES,
+            Some(ServerLimits::MAX_HEADER_LIST_BYTES),
         ),
+        ("maxConnectionAgeSeconds", 1_800, 1, 86_400, None),
     ]
 }
 
@@ -115,10 +121,12 @@ fn the_charts_defaults_are_the_adr_1006_numbers() {
 fn the_charts_defaults_sit_inside_the_ranges_the_library_enforces() {
     for (leaf, _, _, _, range) in limits() {
         let value = chart_limit(leaf);
-        assert!(
-            range.contains(&value),
-            "`server.limits.{leaf}: {value}` is outside {range:?}, so the binary would refuse to boot"
-        );
+        if let Some(range) = range {
+            assert!(
+                range.contains(&value),
+                "`server.limits.{leaf}: {value}` is outside {range:?}, so the binary would refuse to boot"
+            );
+        }
     }
 }
 
@@ -128,11 +136,13 @@ fn the_library_ranges_are_the_ones_the_schema_states() {
         serde_json::from_str(&read("chart/values.schema.json")).expect("the schema is JSON");
     let block = &schema["properties"]["server"]["properties"]["limits"];
     for (leaf, _, minimum, maximum, range) in limits() {
-        assert_eq!(
-            (*range.start(), *range.end()),
-            (minimum, maximum),
-            "the library's range for `{leaf}` moved; the schema and this file move with it"
-        );
+        if let Some(range) = range {
+            assert_eq!(
+                (*range.start(), *range.end()),
+                (minimum, maximum),
+                "the library's range for `{leaf}` moved; the schema and this file move with it"
+            );
+        }
         let property = &block["properties"][leaf];
         assert_eq!(property["type"], "integer", "{leaf}");
         assert_eq!(property["minimum"], minimum, "{leaf}");
