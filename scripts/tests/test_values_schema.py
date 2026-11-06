@@ -102,6 +102,7 @@ RETAINED_TYPED_LEAVES = frozenset(
         "server.limits.keepaliveIntervalSeconds",
         "server.limits.keepaliveTimeoutSeconds",
         "server.limits.maxHeaderListBytes",
+        "server.limits.maxConnectionAgeSeconds",
     }
 )
 
@@ -654,6 +655,7 @@ TYPED_ON_PURPOSE: dict[str, dict[str, Any]] = {
     "server.limits.keepaliveIntervalSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
     "server.limits.keepaliveTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 600},
     "server.limits.maxHeaderListBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+    "server.limits.maxConnectionAgeSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
 }
 
 BLOCKS_ON_PURPOSE: dict[str, dict[str, Any]] = {
@@ -682,6 +684,7 @@ BLOCKS_ON_PURPOSE: dict[str, dict[str, Any]] = {
             "keepaliveIntervalSeconds",
             "keepaliveTimeoutSeconds",
             "maxHeaderListBytes",
+            "maxConnectionAgeSeconds",
         ],
     },
 }

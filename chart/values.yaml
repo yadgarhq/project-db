@@ -439,7 +439,6 @@ tls:
 # library. The one cross-key rule, `keepaliveTimeoutSeconds` strictly below
 # `keepaliveIntervalSeconds`, is a render check in `templates/render-checks.yaml`
 # because a schema cannot compare two keys.
-# Connection age (ADR-1006, 30 min) omitted until tonic#2780 ships; yaadgaar #417.
 server:
   limits:
     # Concurrent HTTP/2 streams one connection may open. Range 1..10000.
@@ -452,6 +451,10 @@ server:
     # The largest HTTP/2 header list the server accepts, in bytes. Range
     # 1024..1048576.
     maxHeaderListBytes: 16384
+    # How long a connection lives before the server sends GOAWAY, in seconds
+    # (30 min). Range 1..86400. yadgar-lifecycle reads it from v0.4.0; older
+    # releases ignore it.
+    maxConnectionAgeSeconds: 1800
 
 # D68: scale on CONCURRENCY, not CPU. A -db waits on MariaDB and a logic service
 # waits on its -db, so both saturate at low CPU — a CPU-driven HPA stays quiet

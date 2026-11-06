@@ -350,6 +350,8 @@ spec:
               value: {{ .Values.server.limits.keepaliveTimeoutSeconds | int64 | quote }}
             - name: LISTEN_MAX_HEADER_LIST_BYTES
               value: {{ .Values.server.limits.maxHeaderListBytes | int64 | quote }}
+            - name: LISTEN_MAX_CONNECTION_AGE_SECS
+              value: {{ .Values.server.limits.maxConnectionAgeSeconds | int64 | quote }}
           volumeMounts:
             # THE CONFIGURATION REPOSITORY'S SHARED CONFIGMAP (ADR-0569,
             # ADR-0570, step 2a): the knobs every service reads.
