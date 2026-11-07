@@ -141,17 +141,35 @@ async fn the_class_column_migration_is_a_no_op_wherever_it_has_already_landed() 
     ] {
         let w = World::upgraded(db, history).await;
         let before = shape(&w.pool, db).await;
-        let again: Vec<Migration> = schema::migrations()
-            .expect("set")
+        // The ledger must stay HOLE-FREE and KNOWN: store v0.8 refuses a ledger
+        // row the set does not carry (`LedgerUnknown`) and a set member below
+        // the newest row that was never recorded (`NotApplied`). So the set
+        // keeps every real migration, which the ledger already records, and
+        // ADDS a copy of each class-column migration under a version the
+        // ledger has not seen, so `apply` runs that SQL a second time.
+        let real = schema::migrations().expect("set");
+        let copies: Vec<Migration> = real
             .pending_after(5)
             .map(|m| Migration {
-                // A version the ledger has not seen, so `apply` runs the SQL.
                 version: m.version + 100,
                 name: m.name.clone(),
                 sql: m.sql.clone(),
             })
             .collect();
-        assert!(!again.is_empty(), "migration 6 exists");
+        let again: Vec<Migration> = real
+            .pending_after(0)
+            .map(|m| Migration {
+                version: m.version,
+                name: m.name.clone(),
+                sql: m.sql.clone(),
+            })
+            .chain(copies.iter().map(|m| Migration {
+                version: m.version,
+                name: m.name.clone(),
+                sql: m.sql.clone(),
+            }))
+            .collect();
+        assert!(!copies.is_empty(), "migration 6 exists");
         let set = yadgar_store::migrate::MigrationSet::new(again).expect("set");
         World::apply(&w.pool, &set).await.expect("re-run");
         assert_eq!(shape(&w.pool, db).await, before, "{db}");
