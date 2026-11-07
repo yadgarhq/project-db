@@ -58,7 +58,7 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # `serve_tls::caller_common_name` (lifecycle#31) is what `SyncProjects` reads
 # its caller's identity with (ADR-0936), so `project` and this store parse a
 # client leaf one way.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.3.10", features = ["serve-tls"] }
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.4.1", features = ["serve-tls"] }
 # THE CALLER'S DEADLINE (ADR-1019, yaadgaar #337). `Deadline::of` reads the
 # incoming `grpc-timeout`, and every pool acquire is bounded by what is left of
 # it, so this store answers DEADLINE_EXCEEDED itself instead of waiting out the
