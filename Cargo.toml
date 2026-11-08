@@ -67,7 +67,7 @@ yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v
 # read this crate, for `min_request_timeout()`. This binary still dials
 # nothing; it links the crate for its deadline reader. TAG-PINNED, like every
 # in-org crate. No feature flag: the crate declares no `[features]` table.
-yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.32" }
+yadgar-dial = { git = "https://github.com/yadgarhq/dial.git", tag = "v0.2.33" }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls-ring",
