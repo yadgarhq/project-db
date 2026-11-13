@@ -43,42 +43,23 @@ pub fn scope_of(scope: &Option<Scope>) -> Result<&Scope, Status> {
 /// instead — the shape `iam` → `iam-db` already
 /// uses. An id the `Scope` does carry wins: it was attested by the gateway, the
 /// stronger claim, and `project` resolves the two in the same order.
+///
+/// **`request_id` IS CAPPED WHICHEVER SOURCE IT COMES FROM.** The `Scope` value
+/// and the header fallback both pass through
+/// `yadgar_telemetry::request_id::capped`. A cut value is the first 256
+/// characters followed by `...`.
 pub fn tel_scope(scope: &Option<Scope>, header: String) -> yadgar_telemetry::observe::Scope {
     let field = |f: fn(&Scope) -> &String| scope.as_ref().map(f).cloned().unwrap_or_default();
     let request_id = match field(|s| &s.request_id) {
         attested if !attested.is_empty() => attested,
         _ => header,
     };
+    let request_id = yadgar_telemetry::request_id::capped(&request_id).into_owned();
     yadgar_telemetry::observe::Scope {
         request_id,
         instance_id: field(|s| &s.instance_id),
         user_id: field(|s| &s.user_id),
         project_id: field(|s| &s.project_id),
-    }
-}
-
-/// How many of a caller's characters `x-yadgar-request-id` may put on a record.
-///
-/// A cut value is at most `REQUEST_ID_CAP + 3` characters, the marker included.
-///
-/// **THE SAME BOUND AND MARKER `project`, `iam` AND `iam-db` APPLY** (their
-/// `REQUEST_ID_CAP`, `CUT_MARKER` and `capped`). A copy rather than a shared
-/// crate because none holds it yet — TODO(1255): replace this copy, the marker
-/// and [`capped`] with the shared crate's when ledger 1255 lands. Until then the
-/// copies must stay identical, or two hops cut one over-long id differently and
-/// their records stop joining.
-const REQUEST_ID_CAP: usize = 256;
-
-/// What marks a cut. ASCII, so a capped id is a valid header value on every hop.
-const CUT_MARKER: &str = "...";
-
-/// `s` cut to [`REQUEST_ID_CAP`] characters, with [`CUT_MARKER`] appended if it
-/// was cut. Capping a capped value changes nothing, so an id `project` already
-/// capped is recorded here unchanged and the two records join.
-fn capped(s: &str) -> std::borrow::Cow<'_, str> {
-    match s.char_indices().nth(REQUEST_ID_CAP) {
-        Some((at, _)) => format!("{}{CUT_MARKER}", &s[..at]).into(),
-        None => s.into(),
     }
 }
 
@@ -88,11 +69,15 @@ fn capped(s: &str) -> std::borrow::Cow<'_, str> {
 /// Capped rather than refused, and an absent or unreadable value is `""`,
 /// because a correlation id must never fail a call (D67). A header is bounded
 /// only by the transport, and this `String` reaches the `CallRecord`.
+///
+/// The cap is `yadgar_telemetry::request_id::capped`, shared with every other
+/// hop. Every hop must apply the same cap: a different cut gives a different
+/// `request_id`, and the D67 records stop joining.
 pub fn request_id_of<T>(req: &tonic::Request<T>) -> String {
     req.metadata()
         .get("x-yadgar-request-id")
         .and_then(|v| v.to_str().ok())
-        .map(|v| capped(v).into_owned())
+        .map(|v| yadgar_telemetry::request_id::capped(v).into_owned())
         .unwrap_or_default()
 }
 
