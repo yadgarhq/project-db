@@ -110,4 +110,105 @@ mod tests {
             assert_eq!(tel.project_id, "", "{case}");
         }
     }
+
+    /// A Scope with a given `request_id` and the seeder's principal.
+    fn with_request_id(request_id: String) -> Option<Scope> {
+        Some(Scope {
+            request_id,
+            user_id: SEEDER.into(),
+            ..Default::default()
+        })
+    }
+
+    /// `n` copies of `c`, then the cut marker: a capped request id.
+    fn cut(c: char, n: usize) -> String {
+        format!("{}...", c.to_string().repeat(n))
+    }
+
+    /// AC1: an admitted call's Scope `request_id` is capped; identity kept.
+    #[test]
+    fn request_id_cap_admitted_scope_id_is_cut() {
+        // AC1: main, 1000 chars -> first 256 plus "..." (259), user_id kept
+        let scope = with_request_id("z".repeat(1000));
+        let tel = recorded_scope(Some(SYNC_CALLER), &scope, "h".into());
+        assert_eq!(tel.request_id, cut('z', 256));
+        assert_eq!(tel.request_id.chars().count(), 259);
+        assert_eq!(tel.user_id, SEEDER);
+        // AC1: triangulation, other char and length
+        let scope = with_request_id("q".repeat(500));
+        let tel = recorded_scope(Some(SYNC_CALLER), &scope, "h".into());
+        assert_eq!(tel.request_id, cut('q', 256));
+    }
+
+    /// AC1: a refused call still records a capped `request_id`, no identity.
+    #[test]
+    fn request_id_cap_refused_scope_id_is_cut() {
+        // AC1: refusal, caller None, 1000 chars
+        let scope = with_request_id("z".repeat(1000));
+        let tel = recorded_scope(None, &scope, "h".into());
+        assert_eq!(tel.request_id, cut('z', 256));
+        assert_eq!(tel.user_id, "");
+        // AC1: triangulation, another leaf as caller
+        let scope = with_request_id("w".repeat(700));
+        let tel = recorded_scope(Some("gateway-caller"), &scope, "h".into());
+        assert_eq!(tel.request_id, cut('w', 256));
+        assert_eq!(tel.user_id, "");
+    }
+
+    /// AC1: with no Scope the header fallback is capped.
+    #[test]
+    fn request_id_cap_header_fallback_is_cut() {
+        // AC1: main, no Scope, 1000-char header
+        let tel = recorded_scope(Some(SYNC_CALLER), &None, "y".repeat(1000));
+        assert_eq!(tel.request_id, cut('y', 256));
+        // AC1: triangulation, other char and length, no caller
+        let tel = recorded_scope(None, &None, "k".repeat(400));
+        assert_eq!(tel.request_id, cut('k', 256));
+    }
+
+    /// AC1: 257 characters is cut to 256 plus the marker.
+    #[test]
+    fn request_id_cap_boundary_257_is_cut() {
+        // AC1: boundary, 257 chars
+        let scope = with_request_id("a".repeat(257));
+        let tel = recorded_scope(None, &scope, "h".into());
+        assert_eq!(tel.request_id, cut('a', 256));
+        // AC1: triangulation, 300 chars
+        let scope = with_request_id("b".repeat(300));
+        let tel = recorded_scope(None, &scope, "h".into());
+        assert_eq!(tel.request_id, cut('b', 256));
+    }
+
+    /// AC1: the cut counts characters, not bytes, so the result is valid UTF-8.
+    #[test]
+    fn request_id_cap_counts_characters_not_bytes() {
+        let e_acute = char::from_u32(0xE9).unwrap();
+        // AC1: boundary, 300 two-byte chars
+        let scope = with_request_id(e_acute.to_string().repeat(300));
+        let tel = recorded_scope(None, &scope, "h".into());
+        assert_eq!(tel.request_id, cut(e_acute, 256));
+        assert_eq!(tel.request_id.chars().count(), 259);
+        // AC1: triangulation, three-byte char, 400 of them
+        let euro = char::from_u32(0x20AC).unwrap();
+        let scope = with_request_id(euro.to_string().repeat(400));
+        let tel = recorded_scope(None, &scope, "h".into());
+        assert_eq!(tel.request_id, cut(euro, 256));
+    }
+
+    /// AC1 property: capping a capped value changes nothing.
+    #[test]
+    fn request_id_cap_is_idempotent() {
+        for (c, n) in [('z', 1000_usize), ('a', 257), ('\u{E9}', 300)] {
+            // AC1: idempotent, scope source
+            let scope = with_request_id(c.to_string().repeat(n));
+            let once = recorded_scope(None, &scope, "h".into()).request_id;
+            assert_eq!(once, cut(c, 256));
+            let again = recorded_scope(None, &with_request_id(once.clone()), "h".into());
+            assert_eq!(again.request_id, once);
+            // AC1: idempotent, header source
+            let once = recorded_scope(None, &None, c.to_string().repeat(n)).request_id;
+            let again = recorded_scope(None, &None, once.clone());
+            assert_eq!(again.request_id, once);
+        }
+    }
 }
