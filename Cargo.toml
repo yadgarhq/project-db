@@ -35,7 +35,7 @@ prost-types = "0.14"
 # crate. `v0.1.2` is `v0.1.1` with its own vendored proto pin moved to v1.10.2 —
 # a provable no-op, taken because a new repository pinning a stale tag is a
 # choice that would need a reason and has none.
-yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.2.17", features = ["grpc"] }
+yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v0.2.18", features = ["grpc"] }
 # WHICH SIGNALS END THIS PROCESS, and the ADR-0523 rotation watcher, decided once
 # for the estate rather than once per repository (ADR-0526's pin, D19's rule).
 #
@@ -58,7 +58,7 @@ yadgar-telemetry = { git = "https://github.com/yadgarhq/telemetry.git", tag = "v
 # `serve_tls::caller_common_name` (lifecycle#31) is what `SyncProjects` reads
 # its caller's identity with (ADR-0936), so `project` and this store parse a
 # client leaf one way.
-yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.4.1", features = ["serve-tls"] }
+yadgar-lifecycle = { git = "https://github.com/yadgarhq/lifecycle.git", tag = "v0.4.2", features = ["serve-tls"] }
 # THE CALLER'S DEADLINE (ADR-1019, yaadgaar #337). `Deadline::of` reads the
 # incoming `grpc-timeout`, and every pool acquire is bounded by what is left of
 # it, so this store answers DEADLINE_EXCEEDED itself instead of waiting out the
