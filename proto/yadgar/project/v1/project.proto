@@ -281,7 +281,7 @@ enum GrantLevel {
 // One team's grant on one row. Used by the declaration (`DeclaredProject`),
 // by the stored row (`Project.grants`) and by the load (`RegisteredPath`).
 message DeclaredGrant {
-  // "yadgar:team:<name>", where <name> matches `^[a-z][a-z0-9-]{0,62}$`. The id
+  // `yadgar:team:<name>`, where `<name>` matches `^[a-z][a-z0-9-]{0,62}$`. The id
   // is DETERMINISTIC from the declared team name, so the grant and the team
   // (written to `iam` by `SyncTeams`) never exchange a minted id. A grant
   // naming a team `iam` does not hold matches nobody, because no caller's
@@ -308,6 +308,16 @@ message DeclaredGrant {
 // it read, so there is no version it could have observed. The store serialises
 // concurrent syncs instead: each one locks a sentinel row that always exists,
 // so two first syncs into an empty store cannot both proceed.
+//
+// UNKNOWN FIELDS ARE DROPPED WITHOUT AN ERROR, and that is a rule for the
+// caller. prost discards a field number that its vendored copy of this proto
+// does not define, so a hop that vendors an older version decodes the request
+// with no error and no log line. The sync then succeeds as if the field had
+// never been set. `seeder` calls `project`, and `project` calls `project-db`,
+// each with its own vendored copy. So `seeder` MUST NOT set a field that this
+// message gained after the oldest of those copies. It sets the field only
+// after `project`, and then `project-db`, vendor the proto version that
+// defines it.
 message SyncProjectsRequest {
   // THE SEEDER'S SCOPE (ADR-0942, open), not a gateway-attested one.
   // `user_id` is the seeder's fixed system principal, `yadgar:system:seeder`,
@@ -577,13 +587,13 @@ message RegisteredPath {
 // ADR-0511 kept), and a contract demanding one from a caller that cannot have
 // one is a contract that caller cannot satisfy.
 //
-// AND THE STORE STILL DEMANDS ONE, so this shape does not by itself make the
-// call possible. `project-db/src/read.rs` opens `list` with
-// `scope_of(&req.scope)?` and `project-db/src/sql.rs` refuses an absent Scope
-// with "scope is required and is attested by the gateway". The store half of
-// this contract is tagged and implemented and is NOT changed here, so whoever
-// builds `project` meets that wall on the hot-path verb rather than only on the
-// staged flush timer. Named rather than papered over.
+// THE STORE DOES NOT DEMAND ONE. `ProjectDbService.ListProjects`,
+// `ResolveProject` and `GetProject` accept an absent Scope, because no read
+// filters, keys or partitions on it (`project-db/src/sql.rs`, `scope_of`'s
+// documentation; pinned by `project-db` `tests/list.rs`,
+// `list_accepts_an_absent_scope`). `RegisterProject` and `TouchProjects` still
+// refuse an absent Scope with "scope is required and is attested by the
+// gateway", so this relaxation covers the three reads and nothing else.
 message ProjectServiceListProjectsRequest {
   // A REQUEST, NOT A GUARANTEE, and a caller that has no number to pass sends
   // none. The page a caller can actually be given is derived from BYTES rather
@@ -712,6 +722,11 @@ message ProjectServiceResolveProjectResponse {
 // numbers, same meanings, and the same decisions against D9's `Idempotency`
 // and D8's `expect_version` (see that message). A separate type only because
 // `RPC_REQUEST_RESPONSE_UNIQUE` requires one per rpc.
+//
+// UNKNOWN FIELDS ARE DROPPED WITHOUT AN ERROR; see `SyncProjectsRequest` for
+// the rule. `project` decodes this message with its vendored copy of this
+// proto, so `seeder` MUST NOT set a field that this message gained until
+// `project`, and then `project-db`, vendor the proto version that defines it.
 message ProjectServiceSyncProjectsRequest {
   // A Scope ON THIS TIER, which `ListProjects` and `ResolveProject` above do
   // not carry, and the difference is the caller (ADR-0942, open). ADR-0488 as
